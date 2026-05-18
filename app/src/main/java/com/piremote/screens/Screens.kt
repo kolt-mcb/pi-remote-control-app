@@ -54,6 +54,7 @@ fun ConnectScreen(vm: ChatViewModel, url: String, input: String, messages: List<
                 val wsUrl = if (scanned.startsWith("piremote://")) scanned.replaceFirst("piremote://", "ws://") else scanned
                 t = wsUrl
                 vm.setServerUrl(wsUrl); vm.connect(); showScanner = false
+            },
             onClose = { showScanner = false }
         )
         return
@@ -66,6 +67,7 @@ fun ConnectScreen(vm: ChatViewModel, url: String, input: String, messages: List<
             Text("Control your Pi agent from your phone", color = textSecondary, fontSize = 16.sp)
 
             OutlinedTextField(
+                value = t, onValueChange = { t = it }, label = { Text("WebSocket URL") },
                 placeholder = { Text("ws://192.168.1.100:8765") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                 textStyle = LocalTextStyle.current.copy(color = textPrimary),
                 trailingIcon = { IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, "Options", tint = textSecondary) } }
@@ -187,18 +189,26 @@ fun InputArea(vm: ChatViewModel, input: String, busy: Boolean, hasMessages: Bool
         Divider(color = border)
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             if (steerMode) {
-                AssistChip(onClick = { steerMode = false }, label = { Text("🎯 Steering Pi...", color = thinkingColor, fontSize = 12.sp) })
+                AssumpChip(onClick = { steerMode = false }, label = { Text("🎯 Steering Pi...", color = thinkingColor, fontSize = 12.sp) })
                 Spacer(modifier = Modifier.height(6.dp))
             } else if (followUpMode) {
-                AssistChip(onClick = { followUpMode = false }, label = { Text("↩ Follow-up mode", color = accent, fontSize = 12.sp) })
+                AssumpChip(onClick = { followUpMode = false }, label = { Text("↩ Follow-up mode", color = accent, fontSize = 12.sp) })
             }
 
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
+                    value = input, onValueChange = { t: String -> vm.setInputText(t) },
                     placeholder = {
-                        val ph = when { steerMode -> "Guide Pi..." ; followUpMode -> "Follow-up..." ; else -> "Message Pi..." }
-                        Text(ph, color = textMuted)
+                        val h = when { steerMode -> "Guide Pi..." ; followUpMode -> "Follow-up..." ; else -> "Message Pi..." }
+                        Text(h, color = textMuted)
+                    },
                     modifier = Modifier.weight(1f), maxLines = 4, singleLine = false,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Send),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
+                        if (steerMode) { vm.sendSteer(); steerMode = false }
+                        else if (followUpMode) { vm.sendFollowUp(); followUpMode = false }
+                        else vm.sendPrompt()
+                    }),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = bg,
                         unfocusedContainerColor = bg,
@@ -229,9 +239,13 @@ fun InputArea(vm: ChatViewModel, input: String, busy: Boolean, hasMessages: Bool
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
                 if (busy) {
+                    FilterChip(selected = steerMode, onClick = { steerMode = !steerMode },
+                        label = { Text("Steer", fontSize = 12.sp, color = thinkingColor) },
                         colors = FilterChipDefaults.filterChipColors(selectedContainerColor = thinkingColor.copy(alpha = 0.15f)))
                 }
                 if (!busy && hasMessages) {
+                    FilterChip(selected = followUpMode, onClick = { followUpMode = !followUpMode },
+                        label = { Text("Follow-up", fontSize = 12.sp, color = accent) },
                         colors = FilterChipDefaults.filterChipColors(selectedContainerColor = accent.copy(alpha = 0.15f)))
                 }
             }
