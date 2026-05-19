@@ -22,6 +22,8 @@ class PiWebSocket : WebSocketListener() {
 
     private val _m = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messageFlow: StateFlow<List<ChatMessage>> get() = _m
+    private val _sessions = MutableStateFlow<List<RemoteSession>>(emptyList())
+    val sessionListFlow: StateFlow<List<RemoteSession>> get() = _sessions
     private val _s = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     val statusFlow: StateFlow<ConnectionStatus> get() = _s
     private val _busy = MutableStateFlow(false)
@@ -90,6 +92,8 @@ class PiWebSocket : WebSocketListener() {
         retryCount = 0
         _thinking.value = ""
         stxt = ""
+        // Request session list on connect
+        sock?.send("{\"type\":\"get_sessions\"}")
     }
     override fun onFailure(ws: WebSocket, t: Throwable, r: okhttp3.Response?) {
         Log.e(WS_TAG, "FAILURE: " + t.message)
@@ -125,6 +129,7 @@ class PiWebSocket : WebSocketListener() {
         if (tp == "message_end") { val mm = JP.nj(j, "message"); if (mm != null) msgEnd(mm) }
         if (tp == "message_update") msgUpd(j)
         if (tp == "tool_start") toolStart(j)
+        if (tp == "session_list") { try { handleSessions(j) } catch (_: Throwable) {} }
     }
 
     private fun msgStart(j: Map<*, *>) {
@@ -204,6 +209,23 @@ class PiWebSocket : WebSocketListener() {
         _a.value = ""
     }
     private fun ss(sub: String) { es(sub) }
+    private fun handleSessions(j: Map<*, *>) {
+        val sessionsArr = j["sessions"] ?: return
+        if (sessionsArr !is List<*>) return
+        val list = sessionsArr.mapNotNull { s ->
+            if (s !is Map<*, *>) return@mapNotNull null
+            RemoteSession(
+                id = (s["id"] as? String) ?: "",
+                name = (s["name"] as? String) ?: "",
+                status = (s["status"] as? String) ?: "idle",
+                connectedAt = ((s["connectedAt"] as? Number) ?: 0).toLong(),
+                lastActivity = ((s["lastActivity"] as? Number) ?: 0).toLong(),
+                messageCount = ((s["messageCount"] as? Number) ?: 0).toInt(),
+                turnIndex = ((s["turnIndex"] as? Number) ?: 0).toInt()
+            )
+        }
+        _sessions.value = list
+    }
 }
 
 // ── JSON helpers (hand-rolled parser) ──
@@ -279,4 +301,18 @@ object Js {
     fun e(s: String): String {
         return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
     }
+}
+
+// ── Session model ──
+
+data class RemoteSession(
+    val id: String,
+    val name: String,
+    val status: String,
+    val connectedAt: Long,
+    val lastActivity: Long,
+    val messageCount: Int,
+    val turnIndex: Int
+) {
+    val isActive: Boolean = status == "busy"
 }

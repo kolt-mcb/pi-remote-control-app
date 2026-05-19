@@ -42,7 +42,7 @@ import java.util.*
 import kotlinx.coroutines.delay
 
 @Composable
-fun ConnectScreen(vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>, assist: String, status: ConnectionStatus, urlHistory: Set<String>) {
+fun ConnectScreen(vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>, assist: String, status: ConnectionStatus, urlHistory: Set<String>, sessions: List<com.piremote.RemoteSession> = emptyList()) {
     var t by remember { mutableStateOf(url) }
     var showMenu by remember { mutableStateOf(false) }
     var showScanner by remember { mutableStateOf(false) }
@@ -150,7 +150,7 @@ fun ShortChip(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun ChatScreen(vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>, assist: String, status: ConnectionStatus, busy: Boolean) {
+fun ChatScreen(vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>, assist: String, status: ConnectionStatus, busy: Boolean, sessions: List<com.piremote.RemoteSession> = emptyList(), selectedSession: String = "") {
     val ls = rememberLazyListState()
     val cnt = messages.size + if (assist.isNotBlank()) 2 else 0
     LaunchedEffect(cnt) {
@@ -172,6 +172,12 @@ fun ChatScreen(vm: ChatViewModel, url: String, input: String, messages: List<Cha
                     if (busy) Text("thinking...", color = thinkingColor, fontSize = 12.sp, fontStyle = FontStyle.Italic)
                 }
                 TextButton(onClick = { vm.disconnect() }) { Text("Disconnect", color = errorColor, fontSize = 14.sp) }
+            }
+            if (sessions.isNotEmpty()) {
+                Divider(color = border.copy(alpha = 0.3f))
+                val selId = if (selectedSession.isNotBlank()) selectedSession else sessions.first().id
+                SessionSelector(sessions, selId) { vm.setSelectedSession(it) }
+                Divider(color = border.copy(alpha = 0.3f))
             }
         }
         Divider(color = border)
@@ -430,3 +436,95 @@ fun BlinkDot() {
     LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(500); blink = !blink } }
     Box(modifier = Modifier.size(5.dp).clip(CircleShape).background(if (blink) accent else Color.Transparent))
 }
+
+val fullTimeFormat = java.text.SimpleDateFormat("h:mm a", java.util.Locale.getDefault())
+fun sessionTime(ts: Long): String {
+    val now = java.lang.System.currentTimeMillis()
+    val diff = now - ts
+    if (diff < 60_000) return "just now"
+    if (diff < 3_600_000) return "${diff / 60_000}m ago"
+    if (diff < 86_400_000) {
+        val h = diff / 3_600_000
+        val m = (diff % 3_600_000) / 60_000
+        return "${h}h ${m}m ago"
+    }
+    return fullTimeFormat.format(java.util.Date(ts))
+}
+
+@Composable
+fun SessionsList(sessions: List<com.piremote.RemoteSession>, onClick: ((com.piremote.RemoteSession) -> Unit)? = null) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        sessions.forEach { sess ->
+            val isActive = sess.status == "busy"
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable(enabled = onClick != null) { onClick?.invoke(sess) }
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier.size(8.dp).clip(CircleShape)
+                            .background(if (isActive) thinkingColor else toolBorder)
+                    )
+                    Text(sess.name, fontSize = 13.sp, color = textPrimary, fontWeight = FontWeight.Medium)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (isActive) "busy" else "idle",
+                        fontSize = 10.sp,
+                        color = if (isActive) thinkingColor else textMuted,
+                        fontStyle = FontStyle.Italic
+                    )
+                    Text(
+                        "${sess.messageCount} msgs • ${sessionTime(sess.lastActivity)}",
+                        fontSize = 10.sp,
+                        color = textMuted
+                    )
+                    Text(
+                        "${sessions.indexOf(sess) + 1}/${sessions.size}",
+                        fontSize = 9.sp,
+                        color = textMuted.copy(alpha = 0.5f)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SessionSelector(sessions: List<com.piremote.RemoteSession>, selected: String, onSelect: (String) -> Unit) {
+    if (sessions.size < 2) return
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        sessions.forEach { sess ->
+            val isSelected = sess.id == selected
+            Surface(
+                modifier = Modifier.clickable { onSelect(sess.id) },
+                shape = RoundedCornerShape(12.dp),
+                color = if (isSelected) accent else Color.Transparent,
+                border = if (isSelected) null else BorderStroke(1.dp, accent.copy(alpha = 0.3f))
+             ) {
+                androidx.compose.foundation.layout.Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier.size(6.dp).clip(CircleShape)
+                            .background(if (sess.status == "busy") thinkingColor else toolBorder)
+                    )
+                    Text(
+                        sess.name.take(12),
+                        fontSize = 11.sp,
+                        color = if (isSelected) Color.White else accent,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+        }
+    }
+}
+

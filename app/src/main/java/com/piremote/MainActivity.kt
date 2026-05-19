@@ -59,6 +59,8 @@ class MainActivity : ComponentActivity() {
                 val status: ConnectionStatus by st.status.collectAsState()
                 val busy: Boolean by st.busy.collectAsState()
                 val urlHistory by st.urlHistory.collectAsState()
+                val sessions by ws.sessionListFlow.collectAsState()
+                val selectedSession by st.selectedSession.collectAsState()
 
                 // Load DataStore on startup
                 LaunchedEffect(Unit) {
@@ -87,8 +89,10 @@ class MainActivity : ComponentActivity() {
                     }
                 })
 
-                if (status == ConnectionStatus.Connected) ChatScreen(vm, url, inp, ms, assist, status, busy)
-                else ConnectScreen(vm, url, inp, ms, assist, status, urlHistory)
+                if (status == ConnectionStatus.Connected)
+                    ChatScreen(vm, url, inp, ms, assist, status, busy, sessions, selectedSession)
+                else
+                    ConnectScreen(vm, url, inp, ms, assist, status, urlHistory, sessions)
             }
         }
     }

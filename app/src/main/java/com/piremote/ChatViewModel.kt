@@ -49,6 +49,7 @@ class ChatUIState(
     val busy: StateFlow<Boolean>,
     val inputText: MutableStateFlow<String>,
     val urlHistory: StateFlow<Set<String>>,
+    val selectedSession: MutableStateFlow<String>,
 )
 
 class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : ViewModel() {
@@ -56,10 +57,13 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     val _url = MutableStateFlow("")
     val _inp = MutableStateFlow("")
     val _urlHistory = MutableStateFlow<Set<String>>(emptySet())
+    private val _selectedSession = MutableStateFlow("")
 
     val st = ChatUIState(
-        _url, _ws.messageFlow, _ws.assistingTextFlow, _ws.statusFlow, _ws.busyFlow, _inp, _urlHistory
+        _url, _ws.messageFlow, _ws.assistingTextFlow, _ws.statusFlow, _ws.busyFlow, _inp, _urlHistory, _selectedSession
     )
+
+    fun setSelectedSession(id: String) { _selectedSession.value = id }
 
     fun setServerUrl(u: String) { _url.value = u }
     fun setInputText(t: String) { _inp.value = t }
