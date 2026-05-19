@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -150,7 +151,7 @@ fun ShortChip(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-fun ChatScreen(vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>, assist: String, status: ConnectionStatus, busy: Boolean, sessions: List<com.piremote.RemoteSession> = emptyList(), selectedSession: String = "") {
+fun ChatScreen(vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>, assist: String, status: ConnectionStatus, busy: Boolean, sessions: List<com.piremote.RemoteSession> = emptyList(), selectedSession: String = "", commands: List<com.piremote.RemoteCommand> = emptyList()) {
     val ls = rememberLazyListState()
     val cnt = messages.size + if (assist.isNotBlank()) 2 else 0
     LaunchedEffect(cnt) {
@@ -159,7 +160,7 @@ fun ChatScreen(vm: ChatViewModel, url: String, input: String, messages: List<Cha
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().imePadding()) {
         // Header
         Column(modifier = Modifier.fillMaxWidth().background(bgSecondary)) {
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -183,7 +184,7 @@ fun ChatScreen(vm: ChatViewModel, url: String, input: String, messages: List<Cha
         Divider(color = border)
 
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), state = ls, contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(messages, key = { it.id }) { MessageBubble(it) }
+            itemsIndexed(messages, key = { idx, msg -> "${idx}_${msg.id}_${msg.timestamp}" }) { _, msg -> MessageBubble(msg) }
             if (assist.isNotBlank()) {
                 item(key = "streaming") {
                     Row(modifier = Modifier.fillMaxWidth()) {
@@ -195,17 +196,40 @@ fun ChatScreen(vm: ChatViewModel, url: String, input: String, messages: List<Cha
             item(key = "spacer") { Spacer(Modifier.height(12.dp)) }
         }
 
-        InputArea(vm, input, busy, messages.isNotEmpty())
+        InputArea(vm, input, busy, messages.isNotEmpty(), commands)
     }
 }
 
 @Composable
-fun InputArea(vm: ChatViewModel, input: String, busy: Boolean, hasMessages: Boolean) {
+fun InputArea(vm: ChatViewModel, input: String, busy: Boolean, hasMessages: Boolean, commands: List<com.piremote.RemoteCommand> = emptyList()) {
     var steerMode by remember { mutableStateOf(false) }
     var followUpMode by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
 
     Column(modifier = Modifier.background(bgSecondary)) {
+        // Slash-command suggestions: shown above the input when input starts with "/"
+        if (input.startsWith("/") && commands.isNotEmpty()) {
+            val query = input.removePrefix("/").substringBefore(' ').lowercase()
+            val filtered = commands.filter { it.name.lowercase().startsWith(query) }.take(8)
+            if (filtered.isNotEmpty()) {
+                Column(modifier = Modifier.fillMaxWidth().background(bg).padding(vertical = 4.dp)) {
+                    filtered.forEach { cmd ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                vm.setInputText("/${cmd.name} ")
+                            }.padding(horizontal = 14.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text("/${cmd.name}", color = accent, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                            if (cmd.description.isNotBlank()) {
+                                Text(cmd.description, color = textMuted, fontSize = 12.sp, maxLines = 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Divider(color = border)
         Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)) {
             if (steerMode) {

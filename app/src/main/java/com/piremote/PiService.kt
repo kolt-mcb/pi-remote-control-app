@@ -35,7 +35,15 @@ class PiService : Service() {
         val msgCount = intent?.getIntExtra(EXTRA_MSG_COUNT, 0) ?: 0
 
         val notification = buildNotification(serverHost, busy, msgCount)
-        startForeground(NOTIFICATION_ID, notification)
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+        } catch (e: Exception) {
+            // Android 14+ FGS quotas (e.g. dataSync 6h/24h) can deny startForeground.
+            // Degrade gracefully: stop the service rather than crashing the app.
+            android.util.Log.w("PiService", "startForeground denied: ${e.message}")
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
         return START_STICKY
     }

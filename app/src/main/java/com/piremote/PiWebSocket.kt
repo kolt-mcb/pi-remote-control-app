@@ -24,6 +24,8 @@ class PiWebSocket : WebSocketListener() {
     val messageFlow: StateFlow<List<ChatMessage>> get() = _m
     private val _sessions = MutableStateFlow<List<RemoteSession>>(emptyList())
     val sessionListFlow: StateFlow<List<RemoteSession>> get() = _sessions
+    private val _commands = MutableStateFlow<List<RemoteCommand>>(emptyList())
+    val commandListFlow: StateFlow<List<RemoteCommand>> get() = _commands
     private val _s = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     val statusFlow: StateFlow<ConnectionStatus> get() = _s
     private val _busy = MutableStateFlow(false)
@@ -93,8 +95,9 @@ class PiWebSocket : WebSocketListener() {
         retryCount = 0
         _thinking.value = ""
         stxt = ""
-        // Request session list on connect
+        // Request session list and command list on connect
         sock?.send("{\"type\":\"get_sessions\"}")
+        sock?.send("{\"type\":\"get_commands\"}")
     }
     override fun onFailure(ws: WebSocket, t: Throwable, r: okhttp3.Response?) {
         Log.e(WS_TAG, "FAILURE: " + t.message)
@@ -131,6 +134,7 @@ class PiWebSocket : WebSocketListener() {
         if (tp == "message_update") msgUpd(j)
         if (tp == "tool_start") toolStart(j)
         if (tp == "session_list") handleSessions(j)
+        if (tp == "command_list") handleCommands(j)
     }
 
     private fun msgStart(j: Map<*, *>) {
@@ -210,6 +214,16 @@ class PiWebSocket : WebSocketListener() {
         _a.value = ""
     }
     private fun ss(sub: String) { es(sub) }
+    private fun handleCommands(j: Map<*, *>) {
+        val arr = j["commands"] ?: return
+        if (arr !is List<*>) return
+        val list = arr.mapNotNull { c ->
+            if (c !is Map<*, *>) return@mapNotNull null
+            val name = (c["name"] as? String) ?: return@mapNotNull null
+            RemoteCommand(name = name, description = (c["description"] as? String) ?: "")
+        }
+        _commands.value = list
+    }
     private fun handleSessions(j: Map<*, *>) {
         val sessionsArr = j["sessions"] ?: return
         if (sessionsArr !is List<*>) return
@@ -306,6 +320,11 @@ object Js {
 }
 
 // ── Session model ──
+
+data class RemoteCommand(
+    val name: String,
+    val description: String
+)
 
 data class RemoteSession(
     val id: String,

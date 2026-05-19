@@ -29,7 +29,11 @@ sealed class ConnectionStatus {
     data class Error(val message: String) : ConnectionStatus()
 }
 enum class MessageToolType { User, Assistant, ToolResult, Streaming, Thinking }
-object MsgId { private val counter = AtomicInteger(0); fun next(): String = counter.incrementAndGet().toString() }
+object MsgId {
+    private val counter = AtomicInteger(0)
+    private val epoch = System.currentTimeMillis()
+    fun next(): String = "$epoch-${counter.incrementAndGet()}"
+}
 
 data class ChatMessage(
     val id: String = MsgId.next(),
@@ -92,7 +96,7 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         } catch (_: Throwable) {}
         // Load saved messages from DB
         viewModelScope.launch {
-            val saved = _dao.getAllByServerUrl(u)
+            val saved = _dao.getAllByServerUrl(u).distinctBy { it.msgId }
             val rebuilt = saved.map { e ->
                 val t = when(e.type) {
                     "User" -> MessageToolType.User
