@@ -69,21 +69,22 @@ class PiWebSocket : WebSocketListener() {
         sock?.close(1000, null)
     }
 
-    fun sendPrompt(txt: String) {
-        send("prompt", txt)
+    fun sendPrompt(txt: String, targetAgentId: String = "") {
+        send("prompt", txt, targetAgentId)
     }
-    fun sendSteer(txt: String) {
-        send("steer", txt)
+    fun sendSteer(txt: String, targetAgentId: String = "") {
+        send("steer", txt, targetAgentId)
     }
-    fun sendFollowUp(txt: String) {
-        send("follow_up", txt)
+    fun sendFollowUp(txt: String, targetAgentId: String = "") {
+        send("follow_up", txt, targetAgentId)
     }
     // Re-inject saved DB messages into the flow (called on reconnect)
     fun repoMessages(saved: List<ChatMessage>) {
         _m.value = _m.value + saved
     }
-    private fun send(type: String, txt: String) {
-        val json = "{\"type\":\"$type\",\"message\":\"${Js.e(txt)}\"}"
+    private fun send(type: String, txt: String, targetAgentId: String = "") {
+        val target = if (targetAgentId.isNotBlank()) ",\"targetAgentId\":\"${Js.e(targetAgentId)}\"" else ""
+        val json = "{\"type\":\"$type\",\"message\":\"${Js.e(txt)}\"$target}"
         sock?.send(json)
     }
 
@@ -217,6 +218,7 @@ class PiWebSocket : WebSocketListener() {
             RemoteSession(
                 id = (s["id"] as? String) ?: "",
                 name = (s["name"] as? String) ?: "",
+                kind = (s["kind"] as? String) ?: "peer",
                 status = (s["status"] as? String) ?: "idle",
                 connectedAt = ((s["connectedAt"] as? Number) ?: 0).toLong(),
                 lastActivity = ((s["lastActivity"] as? Number) ?: 0).toLong(),
@@ -308,6 +310,7 @@ object Js {
 data class RemoteSession(
     val id: String,
     val name: String,
+    val kind: String = "peer",
     val status: String,
     val connectedAt: Long,
     val lastActivity: Long,
@@ -315,4 +318,5 @@ data class RemoteSession(
     val turnIndex: Int
 ) {
     val isActive: Boolean = status == "busy"
+    val isSelf: Boolean = kind == "self"
 }

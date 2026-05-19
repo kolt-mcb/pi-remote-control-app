@@ -121,6 +121,18 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 }
             }
         }
+        // Auto-select the host (self) session whenever the session list updates and
+        // nothing is currently selected (or the selection vanished).
+        viewModelScope.launch {
+            _ws.sessionListFlow.collect { sessions ->
+                val current = _selectedSession.value
+                val stillPresent = sessions.any { it.id == current }
+                if (current.isBlank() || !stillPresent) {
+                    val self = sessions.firstOrNull { it.isSelf } ?: sessions.firstOrNull()
+                    _selectedSession.value = self?.id ?: ""
+                }
+            }
+        }
         // Foreground service: start on connect, update on busy/message changes, stop on disconnect
         viewModelScope.launch {
             val host = extractHost(u)
@@ -153,15 +165,15 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
 
     fun sendPrompt() {
         val t = _inp.value.trim()
-        if (t.isNotEmpty()) { _ws.sendPrompt(t); _inp.value = "" }
+        if (t.isNotEmpty()) { _ws.sendPrompt(t, _selectedSession.value); _inp.value = "" }
     }
     fun sendSteer() {
         val t = _inp.value.trim()
-        if (t.isNotEmpty()) { _ws.sendSteer(t); _inp.value = "" }
+        if (t.isNotEmpty()) { _ws.sendSteer(t, _selectedSession.value); _inp.value = "" }
     }
     fun sendFollowUp() {
         val t = _inp.value.trim()
-        if (t.isNotEmpty()) { _ws.sendFollowUp(t); _inp.value = "" }
+        if (t.isNotEmpty()) { _ws.sendFollowUp(t, _selectedSession.value); _inp.value = "" }
     }
     class Factory(private val ws: PiWebSocket, private val ctx: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
