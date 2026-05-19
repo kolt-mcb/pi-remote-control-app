@@ -49,7 +49,7 @@ class ChatUIState(
     val busy: StateFlow<Boolean>,
     val inputText: MutableStateFlow<String>,
     val urlHistory: StateFlow<Set<String>>,
-    val selectedSession: MutableStateFlow<String>,
+    val selectedSession: StateFlow<String>,
 )
 
 class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : ViewModel() {

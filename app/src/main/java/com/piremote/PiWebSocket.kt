@@ -129,7 +129,7 @@ class PiWebSocket : WebSocketListener() {
         if (tp == "message_end") { val mm = JP.nj(j, "message"); if (mm != null) msgEnd(mm) }
         if (tp == "message_update") msgUpd(j)
         if (tp == "tool_start") toolStart(j)
-        if (tp == "session_list") { try { handleSessions(j) } catch (_: Throwable) {} }
+        if (tp == "session_list") handleSessions(j)
     }
 
     private fun msgStart(j: Map<*, *>) {
