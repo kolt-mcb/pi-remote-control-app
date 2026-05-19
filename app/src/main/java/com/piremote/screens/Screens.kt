@@ -43,7 +43,7 @@ import kotlinx.coroutines.delay
 
 @Composable
 fun ConnectScreen(vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>, assist: String, status: ConnectionStatus, urlHistory: Set<String>) {
-    var t by remember { mutableStateOf(url.ifEmpty { "ws://" }) }
+    var t by remember { mutableStateOf(url) }
     var showMenu by remember { mutableStateOf(false) }
     var showScanner by remember { mutableStateOf(false) }
 
@@ -70,8 +70,22 @@ fun ConnectScreen(vm: ChatViewModel, url: String, input: String, messages: List<
                 value = t, onValueChange = { t = it }, label = { Text("WebSocket URL") },
                 placeholder = { Text("ws://192.168.1.100:8765") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                 textStyle = LocalTextStyle.current.copy(color = textPrimary),
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Go),
+                keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = {
+                    val u = t.ifEmpty { "ws://192.168.1.100:8765" }
+                    vm.setServerUrl(u); vm.connect()
+                }),
                 trailingIcon = { IconButton(onClick = { showMenu = true }) { Icon(Icons.Default.MoreVert, "Options", tint = textSecondary) } }
             )
+
+            // Auto-connect if we have a recent URL and no connection
+            if (urlHistory.isNotEmpty() && status is ConnectionStatus.Disconnected) {
+                val lastUrl = urlHistory.last()
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(500)
+                    vm.setServerUrl(lastUrl); vm.connect()
+                }
+            }
 
             Button(onClick = {
                 val u = t.ifEmpty { "ws://192.168.1.100:8765" }
@@ -289,6 +303,7 @@ fun UserBubble(msg: ChatMessage) {
 fun AssistantBubble(msg: ChatMessage) {
     Column {
         Text(msg.content, color = assistantText, fontSize = 15.sp, lineHeight = 24.sp, modifier = Modifier.fillMaxWidth())
+        Text(tsNow(), color = textMuted, fontSize = 9.sp, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -301,6 +316,7 @@ fun ThinkingBubble(msg: ChatMessage) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 Text("🤔 Thought", color = thinkingColor, fontSize = 12.sp, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Medium)
+                Text(tsNow(), fontSize = 9.sp, color = thinkingColor.copy(alpha = 0.5f))
                 Spacer(Modifier.weight(1f))
                 Text(if (expanded) "▲" else "▼", color = thinkingColor.copy(alpha = 0.5f), fontSize = 10.sp)
             }
@@ -339,6 +355,7 @@ fun ToolBubble(msg: ChatMessage) {
                 }
                 if (msg.isError) Text("ERROR", color = errorColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
+                Text(tsNow(), fontSize = 9.sp, color = textMuted)
                 if (msg.content.length > 500) {
                     Text(if (collapsed) "Show" else "Hide", fontSize = 11.sp, color = textSecondary,
                          modifier = Modifier.clickable { collapsed = !collapsed }.padding(horizontal = 4.dp).padding(vertical = 2.dp))

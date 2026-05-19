@@ -36,7 +36,8 @@ data class ChatMessage(
     val type: MessageToolType = MessageToolType.User,
     val toolName: String = "",
     val content: String = "",
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 class ChatUIState(
