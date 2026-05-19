@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
 import com.piremote.db.ChatDatabase
 import com.piremote.db.ChatMessageEntity
 
@@ -96,7 +97,7 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                     "Thinking" -> MessageToolType.Thinking
                     else -> MessageToolType.Streaming
                 }
-                ChatMessage(id = e.msgId, toolCallId = e.toolCallId, type = t, toolName = e.toolName, content = e.content, isError = e.isError)
+                ChatMessage(id = e.msgId, toolCallId = e.toolCallId, type = t, toolName = e.toolName, content = e.content, isError = e.isError, timestamp = e.timestamp)
             }
             if (rebuilt.isNotEmpty()) _ws.repoMessages(rebuilt)
         }
@@ -109,9 +110,32 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                         _dao.insert(ChatMessageEntity(
                             msgId = m.id, url = u, seq = msgs.indexOf(m),
                             type = m.type.name, toolCallId = m.toolCallId,
-                            toolName = m.toolName, content = m.content, isError = m.isError
+                            toolName = m.toolName, content = m.content, isError = m.isError,
+                            timestamp = m.timestamp
                         ))
                     }
+                }
+            }
+        }
+        // Foreground service: start on connect, update on busy/message changes, stop on disconnect
+        viewModelScope.launch {
+            val host = extractHost(u)
+            _ws.statusFlow.collect { st ->
+                when (st) {
+                    is ConnectionStatus.Connected -> {
+                        try { PiService.start(_ctx, host) } catch (_: Exception) {}
+                        // Update notification as busy state / message count changes
+                        viewModelScope.launch {
+                            combine(_ws.busyFlow, _ws.messageFlow) { busy, msgs -> busy to msgs.size }
+                                .collect { (busy, count) ->
+                                    try { PiService.start(_ctx, host, busy, count) } catch (_: Exception) {}
+                                }
+                        }
+                    }
+                    is ConnectionStatus.Disconnected, is ConnectionStatus.Error -> {
+                        try { PiService.stop(_ctx) } catch (_: Exception) {}
+                    }
+                    else -> {}
                 }
             }
         }
@@ -138,5 +162,11 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     class Factory(private val ws: PiWebSocket, private val ctx: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(c: Class<T>): T = ChatViewModel(ws, ctx) as T
+    }
+
+    private fun extractHost(url: String): String {
+        return try {
+            url.replace("ws://", "").replace("wss://", "").split("/")[0]
+        } catch (_: Exception) { "Pi" }
     }
 }

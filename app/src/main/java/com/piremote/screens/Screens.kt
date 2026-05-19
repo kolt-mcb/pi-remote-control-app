@@ -274,7 +274,10 @@ fun AssumpChip(onClick: () -> Unit, label: @Composable () -> Unit) {
 
 
 val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
+val timeFormatFull = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
 fun tsNow(): String = timeFormat.format(Date())
+fun formatTs(ts: Long): String = timeFormat.format(Date(ts))
+fun formatTsFull(ts: Long): String = timeFormatFull.format(Date(ts))
 
 @Composable
 fun MessageBubble(msg: ChatMessage) {
@@ -293,7 +296,7 @@ fun UserBubble(msg: ChatMessage) {
         Card(colors = CardDefaults.cardColors(containerColor = userBubble), shape = RoundedCornerShape(16.dp, 16.dp, 4.dp, 16.dp), modifier = Modifier.fillMaxWidth(0.88f)) {
             Column(modifier = Modifier.padding(10.dp)) {
                 Text(msg.content, color = Color.White, fontSize = 15.sp, lineHeight = 22.sp)
-                Text(tsNow(), color = Color.White.copy(alpha = 0.5f), fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
+                Text(formatTs(msg.timestamp), color = Color.White.copy(alpha = 0.5f), fontSize = 10.sp, modifier = Modifier.align(Alignment.End))
             }
         }
     }
@@ -303,7 +306,7 @@ fun UserBubble(msg: ChatMessage) {
 fun AssistantBubble(msg: ChatMessage) {
     Column {
         Text(msg.content, color = assistantText, fontSize = 15.sp, lineHeight = 24.sp, modifier = Modifier.fillMaxWidth())
-        Text(tsNow(), color = textMuted, fontSize = 9.sp, modifier = Modifier.padding(top = 2.dp))
+        Text(formatTs(msg.timestamp), color = textMuted, fontSize = 9.sp, modifier = Modifier.padding(top = 2.dp))
     }
 }
 
@@ -316,7 +319,7 @@ fun ThinkingBubble(msg: ChatMessage) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 10.dp, vertical = 8.dp)) {
                 Text("🤔 Thought", color = thinkingColor, fontSize = 12.sp, fontStyle = FontStyle.Italic, fontWeight = FontWeight.Medium)
-                Text(tsNow(), fontSize = 9.sp, color = thinkingColor.copy(alpha = 0.5f))
+                Text(formatTs(msg.timestamp), fontSize = 9.sp, color = thinkingColor.copy(alpha = 0.5f))
                 Spacer(Modifier.weight(1f))
                 Text(if (expanded) "▲" else "▼", color = thinkingColor.copy(alpha = 0.5f), fontSize = 10.sp)
             }
@@ -355,7 +358,7 @@ fun ToolBubble(msg: ChatMessage) {
                 }
                 if (msg.isError) Text("ERROR", color = errorColor, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
-                Text(tsNow(), fontSize = 9.sp, color = textMuted)
+                Text(formatTs(msg.timestamp), fontSize = 9.sp, color = textMuted)
                 if (msg.content.length > 500) {
                     Text(if (collapsed) "Show" else "Hide", fontSize = 11.sp, color = textSecondary,
                          modifier = Modifier.clickable { collapsed = !collapsed }.padding(horizontal = 4.dp).padding(vertical = 2.dp))
