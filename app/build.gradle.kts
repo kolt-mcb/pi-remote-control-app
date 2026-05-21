@@ -80,4 +80,6 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    // Image loading for attachment previews
+    implementation("io.coil-kt:coil-compose:2.5.0")
 }

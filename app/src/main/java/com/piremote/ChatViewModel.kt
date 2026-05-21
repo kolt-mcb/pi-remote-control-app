@@ -1,6 +1,7 @@
 package com.piremote
 
 import android.content.Context
+import android.net.Uri
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -28,6 +29,9 @@ sealed class ConnectionStatus {
     data object Connected : ConnectionStatus()
     data class Error(val message: String) : ConnectionStatus()
 }
+
+/** Which sub-screen to show while connected */
+enum class ConnectedScreen { Chat, Sessions }
 enum class MessageToolType { User, Assistant, ToolResult, Streaming, Thinking }
 object MsgId {
     private val counter = AtomicInteger(0)
@@ -40,6 +44,7 @@ data class ChatMessage(
     val toolCallId: String = "",
     val type: MessageToolType = MessageToolType.User,
     val toolName: String = "",
+    val toolArgs: String = "",
     val content: String = "",
     val isError: Boolean = false,
     val timestamp: Long = System.currentTimeMillis()
@@ -54,6 +59,9 @@ class ChatUIState(
     val inputText: MutableStateFlow<String>,
     val urlHistory: StateFlow<Set<String>>,
     val selectedSession: StateFlow<String>,
+    val notifyBanners: StateFlow<List<com.piremote.BannerMessage>>,
+    val uiTitle: StateFlow<String?>,
+    val clientCount: StateFlow<Int>,
 )
 
 class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : ViewModel() {
@@ -62,9 +70,52 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     val _inp = MutableStateFlow("")
     val _urlHistory = MutableStateFlow<Set<String>>(emptySet())
     private val _selectedSession = MutableStateFlow("")
+    private val _connectedScreen = MutableStateFlow(ConnectedScreen.Chat)
+
+    // Attached images for the current message
+    private val _attachedImages = MutableStateFlow<List<Uri>>(emptyList())
+    val attachedImagesFlow: StateFlow<List<Uri>> get() = _attachedImages
+    private val _attachedBase64 = MutableStateFlow<Map<Uri, String>>(emptyMap())
+
+    fun addImage(uri: Uri) {
+        val current = _attachedImages.value.toMutableList()
+        if (!current.contains(uri)) {
+            current.add(uri)
+            _attachedImages.value = current
+            viewModelScope.launch {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val b64 = uriToBase64(uri)
+                    _attachedBase64.value = _attachedBase64.value.toMutableMap().apply { put(uri, b64) }
+                }
+            }
+        }
+    }
+    fun removeImage(uri: Uri) {
+        _attachedImages.value = _attachedImages.value.filter { it != uri }
+        _attachedBase64.value = _attachedBase64.value.toMutableMap().apply { remove(uri) }
+    }
+    fun clearImages() {
+        _attachedImages.value = emptyList()
+        _attachedBase64.value = emptyMap()
+    }
+    fun getBase64ForImage(uri: Uri): String = _attachedBase64.value[uri] ?: ""
+    fun getMimeTypeForImage(uri: Uri): String {
+        return try { _ctx.contentResolver.getType(uri) ?: "image/jpeg" } catch (_: Exception) { "image/jpeg" }
+    }
+    private fun uriToBase64(uri: Uri): String {
+        val stream = _ctx.contentResolver.openInputStream(uri) ?: return ""
+        val bytes = stream.use { it.readBytes() }
+        return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+    }
+
+    val connectedScreen = _connectedScreen
+    fun setConnectedScreen(s: ConnectedScreen) { _connectedScreen.value = s }
+    fun showSessionsScreen() { _connectedScreen.value = ConnectedScreen.Sessions }
+    fun showChatScreen() { _connectedScreen.value = ConnectedScreen.Chat }
 
     val st = ChatUIState(
-        _url, _ws.messageFlow, _ws.assistingTextFlow, _ws.statusFlow, _ws.busyFlow, _inp, _urlHistory, _selectedSession
+        _url, _ws.messageFlow, _ws.assistingTextFlow, _ws.statusFlow, _ws.busyFlow, _inp, _urlHistory, _selectedSession,
+        _ws.notifyBannerFlow, _ws.uiTitleFlow, _ws.clientCountFlow
     )
 
     fun setSelectedSession(id: String) { _selectedSession.value = id }
@@ -159,6 +210,7 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 }
             }
         }
+        _connectedScreen.value = ConnectedScreen.Chat
         _ws.connect(u)
     }
 
@@ -169,7 +221,16 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
 
     fun sendPrompt() {
         val t = _inp.value.trim()
-        if (t.isNotEmpty()) { _ws.sendPrompt(t, _selectedSession.value); _inp.value = "" }
+        val images = _attachedImages.value
+        if (t.isNotEmpty() || images.isNotEmpty()) {
+            _ws.sendPrompt(t, _selectedSession.value, images.mapNotNull { uri ->
+                val b64 = getBase64ForImage(uri)
+                val mime = getMimeTypeForImage(uri)
+                if (b64.isNotEmpty()) "data:$mime;base64,$b64" else null
+            })
+            _inp.value = ""
+            clearImages()
+        }
     }
     fun sendSteer() {
         val t = _inp.value.trim()
@@ -178,6 +239,16 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     fun sendFollowUp() {
         val t = _inp.value.trim()
         if (t.isNotEmpty()) { _ws.sendFollowUp(t, _selectedSession.value); _inp.value = "" }
+    }
+    /** Send a slash command. Handles local commands (like /disconnect) and forwards
+     *  remote ones (/compact, /new, /reload, /quit, /resume) to the host extension. */
+    fun sendSlashCommand(command: String, args: String = "") {
+        // Local-only commands handled on the device
+        if (command == "disconnect") {
+            disconnect()
+            return
+        }
+        _ws.sendSlashCommand(command, args, _selectedSession.value)
     }
     class Factory(private val ws: PiWebSocket, private val ctx: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

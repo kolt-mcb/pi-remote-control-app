@@ -3,6 +3,8 @@ package com.piremote.scan
 import android.Manifest
 import android.content.pm.PackageManager
 import android.util.Log
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -54,7 +56,15 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
     val lifecycle = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    val ok = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+    var hasCamera by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+    }
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        hasCamera = granted
+    }
+    LaunchedEffect(Unit) {
+        if (!hasCamera) permLauncher.launch(Manifest.permission.CAMERA)
+    }
 
     fun processQr(raw: String) {
         val wsUrl = when {
@@ -73,7 +83,7 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
             Text("⊡ Scan QR to connect", fontSize = 16.sp)
         }
 
-        if (ok) {
+        if (hasCamera) {
             Box(modifier = Modifier.weight(1f)) {
                 AndroidView(
                     factory = { context ->
@@ -94,9 +104,14 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
             }
         } else {
             Box(modifier = Modifier.weight(1f)) {
-                Text("⊅ Grant 'Camera' permission in device settings",
-                    color = Color.Gray, fontSize = 14.sp, textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(32.dp).align(Alignment.Center))
+                Column(modifier = Modifier.padding(32.dp).align(Alignment.Center)) {
+                    Text("⊅ Camera permission needed to scan the QR shown by the Pi host.",
+                        color = Color.Gray, fontSize = 14.sp, textAlign = TextAlign.Center)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(onClick = { permLauncher.launch(Manifest.permission.CAMERA) }) {
+                        Text("Grant camera access")
+                    }
+                }
             }
         }
 

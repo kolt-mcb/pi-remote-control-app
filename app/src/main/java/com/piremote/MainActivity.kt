@@ -2,6 +2,7 @@ package com.piremote
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -9,15 +10,24 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeContentPadding
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.piremote.screens.ConnectScreen
 import com.piremote.screens.ChatScreen
+import com.piremote.screens.SessionsScreen
+import com.piremote.screens.SelectDialog
+import com.piremote.screens.InputDialog
+import com.piremote.screens.TerminalRenderView
 import com.piremote.test.TestState
 import com.piremote.theme.PiRemoteTheme
 import kotlinx.coroutines.flow.first
@@ -32,6 +42,17 @@ class MainActivity : ComponentActivity() {
     ) { granted ->
         if (!granted) {
             Toast.makeText(this, "Notification permission needed for connection status", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Image picker — lets user select one or more images
+    // Callback set from within setContent where vm is available
+    private var onImagePicked: ((Uri) -> Unit)? = null
+    private val imagePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        for (uri in uris) {
+            onImagePicked?.invoke(uri)
         }
     }
 
@@ -50,7 +71,10 @@ class MainActivity : ComponentActivity() {
         requestNotificationsPermission()
         setContent {
             PiRemoteTheme {
+                Box(modifier = Modifier.fillMaxSize().safeContentPadding()) {
                 val vm: ChatViewModel = viewModel(factory = ChatViewModel.Factory(ws, this@MainActivity))
+                // Wire up the image picker callback (Activity-level refs to ViewModel methods)
+                onImagePicked = vm::addImage
                 val st: ChatUIState = vm.st
                 val url by st.serverUrl.collectAsState()
                 val inp: String by st.inputText.collectAsState()
@@ -62,6 +86,18 @@ class MainActivity : ComponentActivity() {
                 val sessions by ws.sessionListFlow.collectAsState()
                 val selectedSession by st.selectedSession.collectAsState()
                 val commands by ws.commandListFlow.collectAsState()
+                val uiRequests by ws.uiRequestFlow.collectAsState()
+                val statuses by ws.statusesFlow.collectAsState()
+                val widgets by ws.widgetsFlow.collectAsState()
+                val compacting by ws.compactingFlow.collectAsState()
+                val retryStatus by ws.retryStatusFlow.collectAsState()
+                val notifyBanners by ws.notifyBannerFlow.collectAsState()
+                val uiTitle by ws.uiTitleFlow.collectAsState()
+                val clientCount by ws.clientCountFlow.collectAsState()
+                // Generic TUI render frames from any Pi extension
+                val renderFrame by ws.renderFrameFlow.collectAsState()
+                // Attached images for the current message
+                val attachedImages by vm.attachedImagesFlow.collectAsState()
 
                 // Load DataStore on startup
                 LaunchedEffect(Unit) {
@@ -69,6 +105,18 @@ class MainActivity : ComponentActivity() {
                     val prefs = dataStore.data.first()
                     val lastUrl = prefs[KEY_URL] ?: ""
                     if (lastUrl.isNotBlank()) vm.setServerUrl(lastUrl)
+                }
+
+                // Back-press handling: when connected and on SessionsScreen, back = disconnect
+                // When connected and on ChatScreen, back = show sessions screen
+                val currentScreen by vm.connectedScreen.collectAsState()
+                if (status == ConnectionStatus.Connected) {
+                    BackHandler {
+                        when (currentScreen) {
+                            ConnectedScreen.Chat -> vm.showSessionsScreen()
+                            ConnectedScreen.Sessions -> vm.disconnect()
+                        }
+                    }
                 }
 
                 lifecycle.addObserver(LifecycleEventObserver { _, event ->
@@ -90,10 +138,47 @@ class MainActivity : ComponentActivity() {
                     }
                 })
 
-                if (status == ConnectionStatus.Connected)
-                    ChatScreen(vm, url, inp, ms, assist, status, busy, sessions, selectedSession, commands)
-                else
-                    ConnectScreen(vm, url, inp, ms, assist, status, urlHistory, sessions)
+                // -- Extension UI: respond to pending dialogs
+                fun uiRespond(id: String, value: String) = ws.sendUIResponse(id, value = value)
+                fun uiCancelled(id: String) = ws.sendUIResponse(id, cancelled = true)
+                // Generic TUI render input back to extension
+                fun renderInput(id: String, value: String) = ws.sendInput(id, value)
+
+                // Show dialogs for extension_ui_request
+                val selReq = uiRequests.firstOrNull { it.method in listOf("select", "confirm") }
+                val inpReq = uiRequests.firstOrNull { it.method in listOf("input", "editor") }
+
+                when {
+                    status == ConnectionStatus.Connected && currentScreen == ConnectedScreen.Chat ->
+                        ChatScreen(vm, url, inp, ms, assist, status, busy, sessions, selectedSession,
+                            commands = commands,
+                            statuses = statuses,
+                            widgets = widgets,
+                            compacting = compacting,
+                            retryStatus = retryStatus,
+                            notifyBanners = notifyBanners,
+                            uiTitle = uiTitle,
+                            attachedImages = attachedImages,
+                            onPickImages = { imagePickerLauncher.launch("image/*") },
+                            onRemoveImage = { uri: Uri -> vm.removeImage(uri) }
+                        )
+                    status == ConnectionStatus.Connected ->
+                        SessionsScreen(vm, sessions, selectedSession, compacting, retryStatus, clientCount)
+                    else ->
+                        ConnectScreen(vm, url, inp, ms, assist, status, urlHistory, sessions)
+                }
+
+                // Overlay dialogs
+                selReq?.let { req -> SelectDialog(req, ::uiRespond, ::uiCancelled) }
+                inpReq?.let { req -> InputDialog(req, ::uiRespond, ::uiCancelled) }
+
+                // Full-screen Terminal render overlay (streams ANY Pi extension TUI)
+                renderFrame?.let { frame ->
+                    TerminalRenderView(frame) { value ->
+                        renderInput(frame.id, value)
+                    }
+                }
+                }
             }
         }
     }
