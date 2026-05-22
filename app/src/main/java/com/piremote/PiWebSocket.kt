@@ -275,7 +275,8 @@ class PiWebSocket : WebSocketListener() {
                 )
             }
         }
-        if (role == "assistant") _m.value += ChatMessage(type = MessageToolType.Assistant, content = content)
+        // assistant prose is handled via streaming (text_delta → text_end → es()),
+        // so skip creating an (empty) Assistant here on msgStart.
     }
 
     private fun msgEnd(j: Map<*, *>) {
