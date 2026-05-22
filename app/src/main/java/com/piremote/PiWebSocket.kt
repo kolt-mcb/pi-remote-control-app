@@ -392,8 +392,12 @@ class PiWebSocket : WebSocketListener() {
             _m.value += ChatMessage(type = MessageToolType.Streaming)
     }
     private fun pushSt(t: String) {
+        // Match the last Streaming bubble unconditionally — pushSt is called with
+        // the *accumulated* delta text, and predicating on content=="" meant only
+        // the first delta ever landed in the persisted message; subsequent deltas
+        // silently no-op'd and the bubble froze at the first chunk's text.
         val ml = _m.value.toMutableList()
-        val idx = ml.indexOfLast { it.type == MessageToolType.Streaming && it.content == "" }
+        val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
         if (idx >= 0) { ml[idx] = ml[idx].copy(content = t); _m.value = ml }
     }
     private fun es(finalText: String?) {
@@ -401,7 +405,10 @@ class PiWebSocket : WebSocketListener() {
         if (sub.isNotBlank()) {
             val ml = _m.value.toMutableList()
             val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
-            if (idx >= 0 && ml[idx].content.isEmpty()) {
+            // Always transition the last Streaming bubble in-place; the old
+            // isEmpty() guard caused a second Assistant message to be appended
+            // when the bubble had already been populated by pushSt.
+            if (idx >= 0) {
                 ml[idx] = ml[idx].copy(type = MessageToolType.Assistant, content = sub)
                 _m.value = ml
             } else { _m.value = ml + ChatMessage(type = MessageToolType.Assistant, content = sub) }
