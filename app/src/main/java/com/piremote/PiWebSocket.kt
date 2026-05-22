@@ -63,6 +63,17 @@ class PiWebSocket : WebSocketListener() {
     private var stxt = ""
     private val tbufs = mutableMapOf<String, StringBuilder>()
 
+    // Turn summary: tracks tool calls during the current agent turn
+    private val _turnSummary = MutableStateFlow<TurnSummary?>(null)
+    val turnSummaryFlow: StateFlow<TurnSummary?> get() = _turnSummary
+    private val turnToolCalls = mutableListOf<String>()
+
+    data class TurnSummary(
+        val toolsUsed: List<ToolCallSummary>,
+        val totalCalls: Int
+    )
+    data class ToolCallSummary(val name: String, val count: Int)
+
     fun connect(url: String) {
         Log.d(WS_TAG, "Connecting to: $url"); pendingUrl = url
         retryCount = 0
@@ -195,8 +206,8 @@ class PiWebSocket : WebSocketListener() {
     private fun dispatch(raw: String) {
         val j = JP.p(raw) ?: return
         val tp = Js.gets(j, "type") ?: return
-        if (tp == "agent_start") { _busy.value = true; stxt = ""; tbufs.clear(); _thinking.value = "" }
-        if (tp == "agent_end") { _busy.value = false; es(null) }
+        if (tp == "agent_start") { _busy.value = true; stxt = ""; tbufs.clear(); _thinking.value = ""; turnToolCalls.clear() }
+        if (tp == "agent_end") { _busy.value = false; es(null); buildTurnSummary() }
         if (tp == "message_start") msgStart(j)
         if (tp == "message_end") { val mm = JP.nj(j, "message"); if (mm != null) msgEnd(mm) }
         if (tp == "message_update") msgUpd(j)
@@ -312,6 +323,7 @@ class PiWebSocket : WebSocketListener() {
         val nm = Js.gets(j, "toolName") ?: "?"
         val argsJson = j["args"]?.toString().orEmpty()
         tbufs[id] = StringBuilder()
+        turnToolCalls.add(nm)
         _m.value += ChatMessage(toolCallId = id, type = MessageToolType.Streaming, toolName = nm, toolArgs = argsJson)
     }
 
@@ -357,6 +369,22 @@ class PiWebSocket : WebSocketListener() {
             )
         }
         tbufs.remove(id)
+    }
+
+    // Build a compact summary of tools used during the last turn
+    private fun buildTurnSummary() {
+        if (turnToolCalls.isEmpty()) {
+            _turnSummary.value = null
+            return
+        }
+        val counts = turnToolCalls.groupingBy { it }.eachCount()
+        val toolsUsed = counts.entries
+            .sortedByDescending { it.value }
+            .map { (name, count) -> ToolCallSummary(name, count) }
+        _turnSummary.value = TurnSummary(
+            toolsUsed = toolsUsed,
+            totalCalls = turnToolCalls.size
+        )
     }
 
     private fun addP() {

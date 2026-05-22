@@ -540,6 +540,66 @@ fun PiFooter(
     }
 }
 
+// ── Compact Turn Summary ──────────────────────────────────────────────
+
+/**
+ * Compact summary bar shown after agent finishes a turn.
+ * 
+ *   ┌─ Last turn (5 calls) ─┐
+ *   │ bash(2) read(3) web(1) │
+ *   └────────────────────────┘
+ * 
+ * Tap to expand for details or dismiss. Terminal-styled chips.
+ */
+@Composable
+fun TurnSummaryPanel(summary: com.piremote.PiWebSocket.TurnSummary) {
+    var expanded by remember { mutableStateOf(false) }
+    PiRoundedBox(
+        header = "Last turn (${summary.totalCalls} calls)",
+        borderColor = borderMuted,
+        content = {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = 4.dp, vertical = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                summary.toolsUsed.forEach { tool ->
+                    PiTurnToolChip(tool.name, tool.count, expanded)
+                }
+            }
+        }
+    )
+}
+
+/** Single tool chip: `toolName(N)` with icon */
+@Composable
+fun PiTurnToolChip(name: String, count: Int, isExpanded: Boolean) {
+    val icon = when {
+        name == "bash" -> "⌘"
+        name == "read" -> "📖"
+        name == "write" -> "✏"  
+        name == "edit" -> "🔧"
+        name == "ToolSearch" -> "🔍"
+        name == "WebFetch" -> "🌐"
+        else -> "●"
+    }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(icon, fontFamily = piMono, fontSize = 10.sp)
+        if (isExpanded) {
+            Text(name, color = textPrimary, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        } else {
+            Text(name, color = textPrimary, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        }
+        Text("($count)", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+    }
+}
+
 // ── Pi Terminal Session Selector ───────────────────────────────────────
 
 @Composable
@@ -611,6 +671,7 @@ fun ChatScreen(
     notifyBanners: List<com.piremote.BannerMessage> = emptyList(),
     uiTitle: String? = null,
     clientCount: Int = 0,
+    turnSummary: com.piremote.PiWebSocket.TurnSummary? = null,
     attachedImages: List<Uri> = emptyList(),
     onPickImages: () -> Unit = {},
     onRemoveImage: (Uri) -> Unit = {}
@@ -688,6 +749,11 @@ fun ChatScreen(
                 busyStartedAt = busyStartedAt,
                 onInterrupt = { steerMode = true }
             )
+        }
+
+        // Compact turn summary — shows what tools were used in last turn
+        if (!busy && turnSummary != null) {
+            TurnSummaryPanel(turnSummary)
         }
 
         PiInputEditor(

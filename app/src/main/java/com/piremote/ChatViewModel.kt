@@ -62,6 +62,7 @@ class ChatUIState(
     val notifyBanners: StateFlow<List<com.piremote.BannerMessage>>,
     val uiTitle: StateFlow<String?>,
     val clientCount: StateFlow<Int>,
+    val turnSummary: StateFlow<com.piremote.PiWebSocket.TurnSummary?>,
 )
 
 class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : ViewModel() {
@@ -115,7 +116,7 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
 
     val st = ChatUIState(
         _url, _ws.messageFlow, _ws.assistingTextFlow, _ws.statusFlow, _ws.busyFlow, _inp, _urlHistory, _selectedSession,
-        _ws.notifyBannerFlow, _ws.uiTitleFlow, _ws.clientCountFlow
+        _ws.notifyBannerFlow, _ws.uiTitleFlow, _ws.clientCountFlow, _ws.turnSummaryFlow
     )
 
     fun setSelectedSession(id: String) { _selectedSession.value = id }

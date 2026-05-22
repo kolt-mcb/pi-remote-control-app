@@ -94,6 +94,7 @@ class MainActivity : ComponentActivity() {
                 val notifyBanners by ws.notifyBannerFlow.collectAsState()
                 val uiTitle by ws.uiTitleFlow.collectAsState()
                 val clientCount by ws.clientCountFlow.collectAsState()
+                val turnSummary by ws.turnSummaryFlow.collectAsState()
                 // Generic TUI render frames from any Pi extension
                 val renderFrame by ws.renderFrameFlow.collectAsState()
                 // Attached images for the current message
@@ -158,6 +159,8 @@ class MainActivity : ComponentActivity() {
                             retryStatus = retryStatus,
                             notifyBanners = notifyBanners,
                             uiTitle = uiTitle,
+                            clientCount = clientCount,
+                            turnSummary = turnSummary,
                             attachedImages = attachedImages,
                             onPickImages = { imagePickerLauncher.launch("image/*") },
                             onRemoveImage = { uri: Uri -> vm.removeImage(uri) }
