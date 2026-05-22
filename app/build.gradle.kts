@@ -82,4 +82,6 @@ dependencies {
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     // Image loading for attachment previews
     implementation("io.coil-kt:coil-compose:2.5.0")
+    // Syntax highlighting for fenced code blocks — same hljs grammar lineage as pi-tui
+    implementation("dev.snipme:highlights:1.0.0")
 }

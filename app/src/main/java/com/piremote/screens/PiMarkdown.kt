@@ -6,6 +6,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -16,6 +17,11 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.piremote.theme.*
+import dev.snipme.highlights.Highlights
+import dev.snipme.highlights.model.BoldHighlight
+import dev.snipme.highlights.model.ColorHighlight
+import dev.snipme.highlights.model.SyntaxLanguage
+import dev.snipme.highlights.model.SyntaxTheme
 
 // Hand-rolled markdown renderer — pi's terminal renders markdown with theme
 // colors (mdHeading/mdCode/mdQuote/...), so we mirror that look in the app.
@@ -127,13 +133,14 @@ fun PiMarkdown(
 
             // Fenced code block — gather lines until the closing ```.
             if (line.trimStart().startsWith("```")) {
+                val lang = line.trimStart().removePrefix("```").trim().ifBlank { null }
                 val codeLines = mutableListOf<String>()
                 i++
                 while (i < lines.size && !lines[i].trimStart().startsWith("```")) {
                     codeLines.add(lines[i]); i++
                 }
                 i++ // skip the closing fence
-                MdCodeBlock(codeLines)
+                MdCodeBlock(codeLines, lang)
                 continue
             }
 
@@ -202,19 +209,94 @@ private fun MdListItem(bullet: String, body: String, indent: Int, baseColor: Col
 }
 
 @Composable
-private fun MdCodeBlock(lines: List<String>) {
+private fun MdCodeBlock(lines: List<String>, lang: String?) {
+    val code = lines.joinToString("\n")
+    val annotated = remember(code, lang) { highlightCode(code, lang) }
     Row(modifier = Modifier.padding(vertical = 3.dp), verticalAlignment = androidx.compose.ui.Alignment.Top) {
         // Left rule — matches pi's quoteBorder-style accent for code blocks.
         Box(modifier = Modifier.width(2.dp).fillMaxHeight().background(mdCodeBlockBorder))
         Spacer(Modifier.width(6.dp))
-        Column {
-            for (l in lines) {
-                Text(l, color = mdCodeBlock, fontFamily = piMono, fontSize = 12.sp)
+        Text(annotated, fontFamily = piMono, fontSize = 12.sp)
+    }
+}
+
+// Tokenize a fenced code block using `dev.snipme:highlights` (same hljs grammar
+// lineage pi-tui uses) and emit a Compose AnnotatedString colored by our palette.
+// If the fence has no language tag or the tag is unknown, falls back to the
+// previous single-color rendering.
+private fun highlightCode(code: String, lang: String?): AnnotatedString {
+    val language = resolveLanguage(lang)
+    if (language == null) {
+        return AnnotatedString(code, SpanStyle(color = mdCodeBlock))
+    }
+    val highlights = Highlights.Builder()
+        .code(code)
+        .language(language)
+        .theme(piSyntaxTheme)
+        .build()
+        .getHighlights()
+    return buildAnnotatedString {
+        withStyleSpan(SpanStyle(color = textPrimary)) { append(code) }
+        for (h in highlights) {
+            val s = h.location.start.coerceIn(0, code.length)
+            val e = h.location.end.coerceIn(s, code.length)
+            if (s == e) continue
+            when (h) {
+                is ColorHighlight -> addStyle(SpanStyle(color = rgbToColor(h.rgb)), s, e)
+                is BoldHighlight  -> addStyle(SpanStyle(fontWeight = FontWeight.Bold), s, e)
             }
         }
     }
 }
 
+// Map common fence aliases (kt, py, sh, …) to Highlights' SyntaxLanguage enum.
+// Returns null when there's no usable language tag so callers can skip
+// highlighting entirely rather than render `DEFAULT` (which strips nothing).
+private fun resolveLanguage(lang: String?): SyntaxLanguage? {
+    if (lang.isNullOrBlank()) return null
+    return when (lang.lowercase().trim()) {
+        "kt", "kotlin"                              -> SyntaxLanguage.KOTLIN
+        "js", "javascript", "jsx", "mjs", "cjs"     -> SyntaxLanguage.JAVASCRIPT
+        "ts", "typescript", "tsx"                   -> SyntaxLanguage.TYPESCRIPT
+        "py", "python"                              -> SyntaxLanguage.PYTHON
+        "sh", "bash", "zsh", "shell"                -> SyntaxLanguage.SHELL
+        "rb", "ruby"                                -> SyntaxLanguage.RUBY
+        "rs", "rust"                                -> SyntaxLanguage.RUST
+        "cpp", "c++", "cxx", "cc", "hpp"            -> SyntaxLanguage.CPP
+        "cs", "csharp", "c#"                        -> SyntaxLanguage.CSHARP
+        "go", "golang"                              -> SyntaxLanguage.GO
+        "java"                                      -> SyntaxLanguage.JAVA
+        "swift"                                     -> SyntaxLanguage.SWIFT
+        "php"                                       -> SyntaxLanguage.PHP
+        "dart"                                      -> SyntaxLanguage.DART
+        "perl", "pl"                                -> SyntaxLanguage.PERL
+        "coffee", "coffeescript"                    -> SyntaxLanguage.COFFEESCRIPT
+        "c", "h"                                    -> SyntaxLanguage.C
+        else                                        -> null
+    }
+}
+
+private fun Color.toRgb(): Int = toArgb() and 0xFFFFFF
+private fun rgbToColor(rgb: Int): Color =
+    Color(red = (rgb shr 16) and 0xFF, green = (rgb shr 8) and 0xFF, blue = rgb and 0xFF)
+
+// Highlights echoes these ints back unchanged in ColorHighlight.rgb, so the
+// round-trip to a Compose Color is lossless.
+private val piSyntaxTheme = SyntaxTheme(
+    key              = "piremote",
+    code             = textPrimary.toRgb(),
+    keyword          = codeKeyword.toRgb(),
+    string           = codeString.toRgb(),
+    literal          = codeNumber.toRgb(),
+    comment          = codeComment.toRgb(),
+    metadata         = codeType.toRgb(),       // @annotations, decorators
+    multilineComment = codeComment.toRgb(),
+    punctuation      = codePunctuation.toRgb(),
+    mark             = codeFunction.toRgb(),   // function-call style marks
+)
+
 // `remember` import without pulling all of runtime into this file.
 @Composable
 private fun <T> remember(key: Any?, calc: () -> T): T = androidx.compose.runtime.remember(key) { calc() }
+@Composable
+private fun <T> remember(k1: Any?, k2: Any?, calc: () -> T): T = androidx.compose.runtime.remember(k1, k2) { calc() }
