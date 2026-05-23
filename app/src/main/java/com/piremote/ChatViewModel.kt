@@ -10,12 +10,16 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
 import com.piremote.db.ChatDatabase
 import com.piremote.db.ChatMessageEntity
 
@@ -72,6 +76,12 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     val _urlHistory = MutableStateFlow<Set<String>>(emptySet())
     private val _selectedSession = MutableStateFlow("")
     private val _connectedScreen = MutableStateFlow(ConnectedScreen.Chat)
+
+    // Scope for everything tied to the current pi connection — persistence
+    // collector, session auto-select, FGS notification updater. connect()
+    // cancels the previous one before opening a new one, so reconnects
+    // don't stack observers; disconnect() cancels for good.
+    private var connectionScope: CoroutineScope? = null
 
     // Attached images for the current message
     private val _attachedImages = MutableStateFlow<List<Uri>>(emptyList())
@@ -146,8 +156,16 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 _urlHistory.value = finalHistory
             }
         } catch (_: Throwable) {}
+
+        // Cancel any observers from a prior connect(). Without this, every
+        // reconnect stacked another set of persistence/session/FGS collectors
+        // on top of the previous ones.
+        connectionScope?.cancel()
+        val scope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob())
+        connectionScope = scope
+
         // Load saved messages from DB
-        viewModelScope.launch {
+        scope.launch {
             val saved = _dao.getAllByServerUrl(u).distinctBy { it.msgId }
             val rebuilt = saved.map { e ->
                 val t = when(e.type) {
@@ -162,13 +180,13 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
             if (rebuilt.isNotEmpty()) _ws.repoMessages(rebuilt)
         }
         // Watch flow for persistence
-        viewModelScope.launch {
+        scope.launch {
             _ws.messageFlow.collect { msgs ->
                 val existingIds = _dao.getAllByServerUrl(u).map { it.msgId }.toSet()
-                for (m in msgs) {
+                for ((idx, m) in msgs.withIndex()) {
                     if (m.id !in existingIds) {
                         _dao.insert(ChatMessageEntity(
-                            msgId = m.id, url = u, seq = msgs.indexOf(m),
+                            msgId = m.id, url = u, seq = idx,
                             type = m.type.name, toolCallId = m.toolCallId,
                             toolName = m.toolName, content = m.content, isError = m.isError,
                             timestamp = m.timestamp
@@ -179,7 +197,7 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         }
         // Auto-select the host (self) session whenever the session list updates and
         // nothing is currently selected (or the selection vanished).
-        viewModelScope.launch {
+        scope.launch {
             _ws.sessionListFlow.collect { sessions ->
                 val current = _selectedSession.value
                 val stillPresent = sessions.any { it.id == current }
@@ -189,20 +207,19 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 }
             }
         }
-        // Foreground service: start on connect, update on busy/message changes, stop on disconnect
-        viewModelScope.launch {
+        // Foreground service: start on connect, update on busy/message changes, stop on disconnect.
+        // collectLatest auto-cancels the inner combine() when status leaves Connected, so the
+        // FGS-updater coroutine doesn't leak across status transitions.
+        scope.launch {
             val host = extractHost(u)
-            _ws.statusFlow.collect { st ->
+            _ws.statusFlow.collectLatest { st ->
                 when (st) {
                     is ConnectionStatus.Connected -> {
                         try { PiService.start(_ctx, host) } catch (_: Exception) {}
-                        // Update notification as busy state / message count changes
-                        viewModelScope.launch {
-                            combine(_ws.busyFlow, _ws.messageFlow) { busy, msgs -> busy to msgs.size }
-                                .collect { (busy, count) ->
-                                    try { PiService.start(_ctx, host, busy, count) } catch (_: Exception) {}
-                                }
-                        }
+                        combine(_ws.busyFlow, _ws.messageFlow) { busy, msgs -> busy to msgs.size }
+                            .collect { (busy, count) ->
+                                try { PiService.start(_ctx, host, busy, count) } catch (_: Exception) {}
+                            }
                     }
                     is ConnectionStatus.Disconnected, is ConnectionStatus.Error -> {
                         try { PiService.stop(_ctx) } catch (_: Exception) {}
@@ -216,9 +233,12 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     }
 
     fun disconnect() {
+        // Tear down the per-connection observers (persistence, session-select,
+        // FGS updater) so reconnects don't stack new ones on top.
+        connectionScope?.cancel()
+        connectionScope = null
         // Keep the persisted chat — connect() rebuilds it via _ws.repoMessages
-        // when the user reconnects to the same URL. Wiping here defeated the
-        // whole persistence pipeline.
+        // when the user reconnects to the same URL.
         _ws.disconnect()
     }
 
