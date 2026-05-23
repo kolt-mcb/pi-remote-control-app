@@ -789,20 +789,18 @@ fun ChatScreen(
             TurnSummaryPanel(turnSummary)
         }
 
-        PiInputEditor(
-            vm = vm,
-            input = input,
-            busy = busy,
-            hasMessages = messages.isNotEmpty(),
-            commands = commands,
-            steerMode = steerMode,
-            setSteerMode = { steerMode = it },
-            followUpMode = followUpMode,
-            setFollowUpMode = { followUpMode = it },
-            attachedImages = attachedImages,
-            onPickImages = onPickImages,
-            onRemoveImage = onRemoveImage
-        )
+        // Inline terminal prompt — part of the scrollback, no separator
+        if (status is ConnectionStatus.Connected) {
+            PiTerminalInput(
+                vm = vm,
+                input = input,
+                busy = busy,
+                steerMode = steerMode,
+                setSteerMode = { steerMode = it },
+                followUpMode = followUpMode,
+                setFollowUpMode = { followUpMode = it }
+            )
+        }
         PiFooter(sessions, selectedSession, messages.size, compacting, retryStatus, clientCount)
     }
 }
@@ -927,6 +925,85 @@ fun PiHotkeyBar(
     }
 }
 
+// ── Terminal-style inline input (live prompt) ─────────────────────────
+
+/**
+ * Bare terminal prompt rendered below the scrollback with no visual
+ * separation — just `>` sigil + TextField, same bg, same font, same padding.
+ * The old PiInputEditor (boxed + toolbar) is kept only for compatibility.
+ */
+@Composable
+fun PiTerminalInput(
+    vm: ChatViewModel, input: String, busy: Boolean,
+    steerMode: Boolean,
+    setSteerMode: (Boolean) -> Unit,
+    followUpMode: Boolean,
+    setFollowUpMode: (Boolean) -> Unit,
+    attachedImages: List<Uri> = emptyList(),
+    onPickImages: () -> Unit = {},
+    onRemoveImage: (Uri) -> Unit = {}
+) {
+    val cursorColor = when {
+        steerMode -> thinkingMedium
+        followUpMode -> accent
+        else -> accent
+    }
+    val placeholder = when {
+        steerMode -> "Steer agent mid-flight…"
+        followUpMode -> "Follow-up to previous turn…"
+        busy -> "(agent busy)"
+        else -> ""
+    }
+
+    // Row: `>` + TextField
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(bg)
+            .imePadding()
+            .padding(horizontal = 6.dp, vertical = 2.dp)
+    ) {
+        PiBlinkSigil(sigil = ">", color = cursorColor, active = input.isEmpty())
+        Spacer(Modifier.width(4.dp))
+        androidx.compose.material3.TextField(
+            value = input,
+            onValueChange = { vm.setInputText(it) },
+            placeholder = {
+                if (placeholder.isNotBlank()) Text(placeholder, color = textMuted, fontFamily = piMono, fontSize = 13.sp)
+            },
+            modifier = Modifier.fillMaxWidth(),
+            maxLines = 4, singleLine = false,
+            colors = androidx.compose.material3.TextFieldDefaults.colors(
+                focusedContainerColor = bg, unfocusedContainerColor = bg,
+                focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+                focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
+                focusedPlaceholderColor = textMuted, unfocusedPlaceholderColor = textMuted,
+                cursorColor = cursorColor
+            ),
+            textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 13.sp),
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Send),
+            enabled = !busy,
+            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
+                when {
+                    steerMode -> { vm.sendSteer(); setSteerMode(false) }
+                    followUpMode -> { vm.sendFollowUp(); setFollowUpMode(false) }
+                    input.trim().startsWith("/") -> {
+                        val trimmed = input.trim()
+                        val spaceIdx = trimmed.indexOf(' ')
+                        val cmd = if (spaceIdx > 1) trimmed.substring(1, spaceIdx) else trimmed.substring(1)
+                        val args = if (spaceIdx > 1) trimmed.substring(spaceIdx + 1).trim() else ""
+                        vm.sendSlashCommand(cmd, args)
+                    }
+                    else -> vm.sendPrompt()
+                }
+            })
+        )
+    }
+}
+
+// ── Legacy boxed input (kept for compat) ──────────────────────────────
+
 @Composable
 fun PiInputEditor(
     vm: ChatViewModel, input: String, busy: Boolean, hasMessages: Boolean,
@@ -939,220 +1016,16 @@ fun PiInputEditor(
     onPickImages: () -> Unit = {},
     onRemoveImage: (Uri) -> Unit = {}
 ) {
-    val editorBorderColor = when {
-        steerMode -> thinkingMedium
-        followUpMode -> accent
-        busy -> thinkingBorder
-        else -> borderMuted
-    }
-
-    val editorLabel = when {
-        steerMode -> "STEER"
-        followUpMode -> "FOLLOW-UP"
-        else -> ""
-    }
-
-    Column(modifier = Modifier.background(bgSecondary)) {
-        // Slash-command suggestions
-        if (input.startsWith("/") && commands.isNotEmpty()) {
-            val query = input.removePrefix("/").substringBefore(' ').lowercase()
-            val filtered = commands.filter { it.name.lowercase().startsWith(query) }.take(8)
-            if (filtered.isNotEmpty()) {
-                Box(modifier = Modifier.fillMaxWidth().background(bg)) {
-                    Column {
-                        androidx.compose.material3.HorizontalDivider(color = border, thickness = 1.dp)
-                        Column(modifier = Modifier.verticalScroll(rememberScrollState()).padding(vertical = 2.dp)) {
-                            filtered.forEach { cmd ->
-                                Row(
-                                    modifier = Modifier.fillMaxWidth()
-                                        .clickable { vm.setInputText("/${cmd.name} ") }
-                                        .padding(horizontal = 10.dp, vertical = 3.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Text("/${cmd.name}", color = accent, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                                    if (cmd.description.isNotBlank()) Text(cmd.description, color = textMuted, fontFamily = piMono, fontSize = 10.sp, maxLines = 1)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Editor border — rounded ╭─╮ to match Claude Code's input box.
-        PiRoundedBox(header = editorLabel.ifEmpty { null }, borderColor = editorBorderColor) {
-            Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                // Mode indicator
-                if (steerMode) {
-                    Text("▸ Steering agent mid-flight…", color = thinkingMedium, fontFamily = piMono, fontSize = 10.sp,
-                        modifier = Modifier.clickable { setSteerMode(false) }.padding(bottom = 4.dp))
-                } else if (followUpMode) {
-                    Text("▸ Follow-up to previous turn…", color = accent, fontFamily = piMono, fontSize = 10.sp,
-                        modifier = Modifier.clickable { setFollowUpMode(false) }.padding(bottom = 4.dp))
-                }
-
-                // Attached image previews
-                if (attachedImages.isNotEmpty()) {
-                    LazyRow(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(attachedImages.toList(), key = { it.toString() }) { uri ->
-                            PiImagePreviewChip(uri, onRemove = { onRemoveImage(uri) })
-                        }
-                        item { Spacer(Modifier.width(4.dp)) }
-                    }
-                    Spacer(Modifier.height(2.dp))
-                }
-
-                // Input row: blinking `>` sigil + text field.
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(6.dp)) {
-                    PiBlinkSigil(
-                        sigil = ">",
-                        color = when {
-                            steerMode -> thinkingMedium
-                            followUpMode -> accent
-                            else -> accent
-                        },
-                        // Sigil only blinks when input is empty (mirrors a terminal at the prompt).
-                        active = input.isEmpty()
-                    )
-                    Spacer(Modifier.width(4.dp))
-                    androidx.compose.material3.TextField(
-                        value = input,
-                        onValueChange = { vm.setInputText(it) },
-                        placeholder = {
-                            Text(when {
-                                steerMode -> "Guide Pi…"
-                                followUpMode -> "Follow-up…"
-                                busy -> "(agent busy)"
-                                else -> "Message Pi…"
-                            }, color = textMuted, fontFamily = piMono)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        maxLines = 4, singleLine = false,
-                        colors = androidx.compose.material3.TextFieldDefaults.colors(
-                            focusedContainerColor = bg, unfocusedContainerColor = bg,
-                            focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                            focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
-                            focusedPlaceholderColor = textMuted, unfocusedPlaceholderColor = textMuted,
-                            cursorColor = accent
-                        ),
-                        textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 13.sp),
-                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
-                            when {
-                                steerMode -> { vm.sendSteer(); setSteerMode(false) }
-                                followUpMode -> { vm.sendFollowUp(); setFollowUpMode(false) }
-                                // Catch slash commands: /command [args]
-                                input.trim().startsWith("/") -> {
-                                    val trimmed = input.trim()
-                                    val spaceIdx = trimmed.indexOf(' ')
-                                    val cmd = if (spaceIdx > 1) trimmed.substring(1, spaceIdx) else trimmed.substring(1)
-                                    val args = if (spaceIdx > 1) trimmed.substring(spaceIdx + 1).trim() else ""
-                                    vm.sendSlashCommand(cmd, args)
-                                }
-                                else -> vm.sendPrompt()
-                            }
-                        })
-                    )
-                }
-
-                Spacer(Modifier.height(4.dp))
-
-                // Bottom controls
-                Row(modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    // [Attach] button — paperclip icon
-                    Box(
-                        modifier = Modifier
-                            .border(1.dp, borderMuted, RoundedCornerShape(0.dp))
-                            .clickable { onPickImages() }
-                            .padding(horizontal = 6.dp, vertical = 3.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.AddAPhoto,
-                            contentDescription = "Attach image",
-                            tint = textMuted,
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-
-                    // [Send] button
-                    val submitText = input.trim()
-                    val hasImages = attachedImages.isNotEmpty()
-                    val isSlashCmd = submitText.startsWith("/")
-                    Box(
-                        modifier = Modifier
-                            .border(1.dp, if (input.isNotBlank() || hasImages) accent else borderMuted, RoundedCornerShape(0.dp))
-                            .clickable(enabled = input.isNotBlank() || hasImages) {
-                                when {
-                                    steerMode -> { vm.sendSteer(); setSteerMode(false) }
-                                    followUpMode -> { vm.sendFollowUp(); setFollowUpMode(false) }
-                                    isSlashCmd -> {
-                                        val spaceIdx = submitText.indexOf(' ')
-                                        val cmd = if (spaceIdx > 1) submitText.substring(1, spaceIdx) else submitText.substring(1)
-                                        val args = if (spaceIdx > 1) submitText.substring(spaceIdx + 1).trim() else ""
-                                        vm.sendSlashCommand(cmd, args)
-                                    }
-                                    else -> vm.sendPrompt()
-                                }
-                            }
-                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                    ) {
-                        Text(
-                            when {
-                                steerMode -> "Steer"
-                                followUpMode -> "Follow"
-                                else -> "Send"
-                            },
-                            color = if (input.isNotBlank() || hasImages) textPrimary else textMuted,
-                            fontFamily = piMono, fontSize = 10.sp
-                        )
-                    }
-
-                    Spacer(Modifier.weight(1f))
-
-                    // steer chip
-                    if (busy) {
-                        Box(
-                            modifier = Modifier
-                                .border(0.5.dp, if (steerMode) thinkingMedium else borderMuted, RoundedCornerShape(0.dp))
-                                .clickable { setSteerMode(!steerMode) }
-                                .padding(horizontal = 5.dp, vertical = 1.dp)
-                        ) {
-                            Text("steer", color = if (steerMode) thinkingMedium else textMuted, fontFamily = piMono, fontSize = 9.sp)
-                        }
-                    }
-
-                    // follow-up chip
-                    if (!busy && hasMessages) {
-                        Box(
-                            modifier = Modifier
-                                .border(0.5.dp, if (followUpMode) accent else borderMuted, RoundedCornerShape(0.dp))
-                                .clickable { setFollowUpMode(!followUpMode) }
-                                .padding(horizontal = 5.dp, vertical = 1.dp)
-                        ) {
-                            Text("follow-up", color = if (followUpMode) accent else textMuted, fontFamily = piMono, fontSize = 9.sp)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Accessory row above the IME with shortcuts for slash, file refs,
-        // bash prefix, backticks, etc. Esc collapses mode or clears input.
-        PiHotkeyBar(
-            input = input,
-            inSpecialMode = steerMode || followUpMode,
-            onInsert = { vm.setInputText(input + it) },
-            onEsc = {
-                if (steerMode) setSteerMode(false)
-                else if (followUpMode) setFollowUpMode(false)
-                else if (input.isNotEmpty()) vm.setInputText("")
-            }
-        )
-    }
+    // Delegate to the new inline terminal prompt
+    PiTerminalInput(
+        vm = vm, input = input, busy = busy,
+        steerMode = steerMode, setSteerMode = setSteerMode,
+        followUpMode = followUpMode, setFollowUpMode = setFollowUpMode
+    )
 }
+
+// Old boxed input removed. Replaced by PiTerminalInput.
+*/
 
 /** Image preview chip — small thumbnail with × to remove */
 @Composable
