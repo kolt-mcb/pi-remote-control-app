@@ -1,7 +1,9 @@
 package com.piremote
 
 import android.util.Log
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -67,6 +69,18 @@ class PiWebSocket : WebSocketListener() {
     private val _turnSummary = MutableStateFlow<TurnSummary?>(null)
     val turnSummaryFlow: StateFlow<TurnSummary?> get() = _turnSummary
     private val turnToolCalls = mutableListOf<String>()
+    private var agentStartedAt = 0L
+
+    // One-shot signal emitted on agent_end so the VM can post a "pi is ready"
+    // notification when the app is backgrounded. SharedFlow (not StateFlow)
+    // because each turn-end is its own event, not a state we re-emit.
+    private val _agentDone = MutableSharedFlow<AgentDoneEvent>(extraBufferCapacity = 4)
+    val agentDoneFlow: SharedFlow<AgentDoneEvent> get() = _agentDone
+
+    data class AgentDoneEvent(
+        val summary: TurnSummary?,
+        val durationMs: Long
+    )
 
     data class TurnSummary(
         val toolsUsed: List<ToolCallSummary>,
@@ -206,8 +220,16 @@ class PiWebSocket : WebSocketListener() {
     private fun dispatch(raw: String) {
         val j = JP.p(raw) ?: return
         val tp = Js.gets(j, "type") ?: return
-        if (tp == "agent_start") { _busy.value = true; stxt = ""; tbufs.clear(); _thinking.value = ""; turnToolCalls.clear() }
-        if (tp == "agent_end") { _busy.value = false; es(null); buildTurnSummary() }
+        if (tp == "agent_start") { _busy.value = true; stxt = ""; tbufs.clear(); _thinking.value = ""; turnToolCalls.clear(); agentStartedAt = System.currentTimeMillis() }
+        if (tp == "agent_end") {
+            _busy.value = false; es(null); buildTurnSummary()
+            // Emit a one-shot done event for backgrounded-notification handling.
+            // Only fires on agent_end (not on socket close), so disconnects
+            // don't trigger spurious notifications.
+            val dur = if (agentStartedAt > 0) System.currentTimeMillis() - agentStartedAt else 0L
+            _agentDone.tryEmit(AgentDoneEvent(summary = _turnSummary.value, durationMs = dur))
+            agentStartedAt = 0L
+        }
         if (tp == "message_start") msgStart(j)
         if (tp == "message_end") { val mm = JP.nj(j, "message"); if (mm != null) msgEnd(mm) }
         if (tp == "message_update") msgUpd(j)

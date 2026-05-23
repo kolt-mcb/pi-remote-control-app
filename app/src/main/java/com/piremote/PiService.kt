@@ -14,6 +14,12 @@ import androidx.core.app.NotificationManagerCompat
 private const val CHANNEL_ID = "pi_remote_connection"
 private const val NOTIFICATION_ID = 1001
 
+// Separate channel for one-shot "pi finished a turn" pings. Keeps these out of
+// the low-importance always-on connection notification so the user actually
+// hears/sees them when the app is in the background.
+private const val DONE_CHANNEL_ID = "pi_remote_done"
+private const val DONE_NOTIFICATION_ID = 1002
+
 /**
  * Foreground service that keeps the Pi WebSocket connection alive while the
  * app is in the background. Shows an ongoing "Connected to Pi" notification.
@@ -89,6 +95,9 @@ class PiService : Service() {
             description = "Shows active Pi agent connection"
         }
         notificationMgr.createNotificationChannel(channel)
+        // Also register the done-channel here so the first notifyDone() call
+        // (which can happen before the service starts in some flows) succeeds.
+        ensureDoneChannel(this, notificationMgr)
     }
 
     companion object {
@@ -113,6 +122,58 @@ class PiService : Service() {
         /** Stop the foreground service */
         fun stop(context: Context) {
             context.stopService(Intent(context, PiService::class.java))
+        }
+
+        /**
+         * Post a one-shot "pi finished" heads-up notification. Caller decides
+         * when this is appropriate (e.g. only when the app is backgrounded);
+         * this method just builds and posts.
+         */
+        fun notifyDone(
+            context: Context,
+            host: String,
+            summary: String?,
+            durationMs: Long
+        ) {
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            ensureDoneChannel(context, nm)
+
+            val openAppIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            val pendingIntent = PendingIntent.getActivity(
+                context, 0, openAppIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val seconds = (durationMs / 1000L).coerceAtLeast(0L)
+            val body = buildString {
+                if (!summary.isNullOrBlank()) append(summary).append(" · ")
+                append("${seconds}s")
+            }
+
+            val notification = NotificationCompat.Builder(context, DONE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("Pi is ready")
+                .setContentText(body)
+                .setSubText(host)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setCategory(Notification.CATEGORY_MESSAGE)
+                .setContentIntent(pendingIntent)
+                .build()
+
+            try { nm.notify(DONE_NOTIFICATION_ID, notification) } catch (_: Exception) { /* perm denied / channel issue */ }
+        }
+
+        private fun ensureDoneChannel(context: Context, nm: NotificationManager) {
+            if (nm.getNotificationChannel(DONE_CHANNEL_ID) != null) return
+            val channel = NotificationChannel(
+                DONE_CHANNEL_ID,
+                "Pi Ready",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "Pings when pi finishes a turn while the app is backgrounded"
+            }
+            nm.createNotificationChannel(channel)
         }
     }
 }

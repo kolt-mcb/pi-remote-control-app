@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -226,6 +228,22 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                     }
                     else -> {}
                 }
+            }
+        }
+        // "Pi is ready" notification — only fires when the app is backgrounded
+        // so the foreground chat doesn't ping over its own view. Foreground
+        // state read off ProcessLifecycleOwner at emit time, not subscribed,
+        // so we don't race the OS lifecycle event ordering.
+        scope.launch {
+            val host = extractHost(u)
+            _ws.agentDoneFlow.collect { done ->
+                val isForeground = ProcessLifecycleOwner.get().lifecycle.currentState
+                    .isAtLeast(Lifecycle.State.STARTED)
+                if (isForeground) return@collect
+                val summary = done.summary?.let { s ->
+                    "${s.totalCalls} tool${if (s.totalCalls != 1) "s" else ""} used"
+                }
+                try { PiService.notifyDone(_ctx, host, summary, done.durationMs) } catch (_: Exception) {}
             }
         }
         _connectedScreen.value = ConnectedScreen.Chat
