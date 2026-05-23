@@ -362,7 +362,33 @@ fun SessionsScreen(
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
+
+            // [+ New session] — sends /new to the selected agent, which calls
+            // ctx.newSession() on pi. Extension auto-broadcasts a "New session
+            // started." notify banner; we navigate back to chat immediately so
+            // the user sees that banner against the fresh conversation.
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Box(
+                    modifier = Modifier
+                        .border(0.5.dp, accent, RoundedCornerShape(0.dp))
+                        .clickable(enabled = sessions.isNotEmpty()) {
+                            vm.sendSlashCommand("new")
+                            vm.showChatScreen()
+                        }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        "[+ New session]",
+                        color = if (sessions.isNotEmpty()) accent else textMuted,
+                        fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
 
             // Session list
             if (sessions.isEmpty()) {
