@@ -1025,7 +1025,6 @@ fun PiInputEditor(
 }
 
 // Old boxed input removed. Replaced by PiTerminalInput.
-*/
 
 /** Image preview chip — small thumbnail with × to remove */
 @Composable
