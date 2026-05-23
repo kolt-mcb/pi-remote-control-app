@@ -724,11 +724,18 @@ fun ChatScreen(
                 itemsIndexed(messages, key = { idx, msg -> "${idx}_${msg.id}_${msg.timestamp}" }) { _, msg ->
                     PiMessageBubble(msg)
                 }
-                if (assist.isNotBlank()) {
+                // The trailing Streaming bubble (rendered as PiAssistantMessage when
+                // its content is non-blank) already shows the live text, since
+                // text_delta updates the bubble via pushSt. Rendering `assist` here
+                // too would duplicate the answer on screen. Only show this preview
+                // for the brief pure-thinking window before text_start fires, when
+                // the bubble doesn't exist yet or is still empty.
+                val bubbleHasLiveText = messages.lastOrNull()?.let {
+                    it.type == com.piremote.MessageToolType.Streaming && it.content.isNotBlank()
+                } == true
+                if (assist.isNotBlank() && !bubbleHasLiveText) {
                     item(key = "streaming") {
                         Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(start = 12.dp, top = 2.dp, end = 4.dp, bottom = 2.dp)) {
-                            // Stream-time markdown rendering matches the final render
-                            // so users don't see a flash when streaming completes.
                             PiMarkdown(
                                 text = assist,
                                 baseColor = assistantText,
