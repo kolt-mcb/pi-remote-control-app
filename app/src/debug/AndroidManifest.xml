@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+
+        <!-- ADB/test broadcast receiver. Debug builds only — release APKs do not
+             register this, so the actions cannot be triggered from other apps. -->
+        <receiver android:name=".test.TestReceiver" android:exported="true">
+            <intent-filter>
+                <action android:name="com.piremote.test.CONNECT" />
+                <action android:name="com.piremote.test.SEND_PROMPT" />
+                <action android:name="com.piremote.test.SEND_STEER" />
+                <action android:name="com.piremote.test.SEND_FOLLOWUP" />
+                <action android:name="com.piremote.test.DISCONNECT" />
+                <action android:name="com.piremote.test.CLEAR_HISTORY" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>
