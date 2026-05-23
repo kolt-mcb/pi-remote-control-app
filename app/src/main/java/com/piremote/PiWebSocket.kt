@@ -271,7 +271,10 @@ class PiWebSocket : WebSocketListener() {
     private fun msgStart(j: Map<*, *>) {
         val mm = JP.nj(j, "message") ?: return
         val role = Js.gets(mm, "role") ?: return
-        val content = Js.gets(mm, "content") ?: ""
+        // pi normalizes message.content into an array of typed blocks
+        // ([{type:"text",text:"hi"}, {type:"image",...}, ...]); plain-string
+        // content also appears for some legacy paths. extractText handles both.
+        val content = extractText(mm)
         if (role == "user") _m.value += ChatMessage(type = MessageToolType.User, content = content)
         if (role == "toolResult") {
             val tid = Js.gets(mm, "toolCallId") ?: ""
@@ -288,6 +291,27 @@ class PiWebSocket : WebSocketListener() {
         }
         // assistant prose is handled via streaming (text_delta → text_end → es()),
         // so skip creating an (empty) Assistant here on msgStart.
+    }
+
+    // Extract a plain-text rendering of a pi Message's content field.
+    // Pi's wire format is normally an array of typed content blocks:
+    //   [{type:"text",text:"..."}, {type:"thinking",thinking:"..."}, {type:"image",...}, ...]
+    // Plain strings still show up for legacy paths and tool results. This helper
+    // accepts both shapes and returns the concatenated text portion (skipping
+    // thinking blocks — those are surfaced separately via the streaming protocol).
+    private fun extractText(message: Map<*, *>): String {
+        val c = message["content"] ?: return ""
+        if (c is String) return c
+        if (c is List<*>) {
+            return c.mapNotNull { block ->
+                if (block !is Map<*, *>) return@mapNotNull null
+                when (block["type"] as? String) {
+                    "text" -> block["text"] as? String
+                    else  -> null   // skip thinking, image, tool_use, …
+                }
+            }.joinToString("")
+        }
+        return ""
     }
 
     private fun msgEnd(j: Map<*, *>) {
@@ -312,7 +336,12 @@ class PiWebSocket : WebSocketListener() {
                 _m.value = _m.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
             }
             _thinking.value = ""
-            stxt = ""
+            // Don't clear stxt here: pi can interleave thinking and text streams,
+            // and thinking_end often arrives AFTER text_delta has populated stxt
+            // (e.g. Qwen3.6: thinking_start → text_start → text_delta → thinking_end
+            //  → text_end). Wiping stxt mid-stream made text_end see empty content,
+            // drop the Streaming bubble, and never produce the Assistant message.
+            // The text stream's own text_end → es(stxt) clears stxt at the right time.
         }
         if (ev == "done") es(null)
         if (ev == "error") { ss("Err: " + (Js.gets(j, "message") ?: "")) }
