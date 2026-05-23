@@ -216,7 +216,9 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     }
 
     fun disconnect() {
-        viewModelScope.launch { _dao.clearByServerUrl(_url.value) }
+        // Keep the persisted chat — connect() rebuilds it via _ws.repoMessages
+        // when the user reconnects to the same URL. Wiping here defeated the
+        // whole persistence pipeline.
         _ws.disconnect()
     }
 
