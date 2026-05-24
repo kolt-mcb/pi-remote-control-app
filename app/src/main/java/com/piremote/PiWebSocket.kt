@@ -372,7 +372,11 @@ class PiWebSocket : WebSocketListener() {
     private fun toolStart(j: Map<*, *>) {
         val id = Js.gets(j, "toolCallId") ?: ""
         val nm = Js.gets(j, "toolName") ?: "?"
-        val argsJson = j["args"]?.toString().orEmpty()
+        // Re-serialize the parsed args back to JSON. j["args"] is a Map from
+        // JP, and the old `.toString()` produced Kotlin's `{k=v}` format that
+        // can't be re-parsed downstream — every renderer that tried fell back
+        // to a 60-char preview.
+        val argsJson = Js.write(j["args"])
         tbufs[id] = StringBuilder()
         turnToolCalls.add(nm)
         _m.value += ChatMessage(toolCallId = id, type = MessageToolType.Streaming, toolName = nm, toolArgs = argsJson)
@@ -644,6 +648,17 @@ object Js {
     fun getBool(m: Map<*, *>, k: String): Boolean? = m[k] as? Boolean
     fun e(s: String): String {
         return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    }
+    /** Round-trip a value parsed by JP back into a JSON string. Counterpart to
+     *  PS.pv() — handles the same primitive set the parser produces. */
+    fun write(v: Any?): String = when (v) {
+        null -> "null"
+        is Boolean -> v.toString()
+        is Number -> v.toString()
+        is String -> "\"${e(v)}\""
+        is Map<*, *> -> v.entries.joinToString(",", "{", "}") { (k, vv) -> "\"${e(k.toString())}\":${write(vv)}" }
+        is List<*> -> v.joinToString(",", "[", "]") { write(it) }
+        else -> "\"${e(v.toString())}\""
     }
 }
 

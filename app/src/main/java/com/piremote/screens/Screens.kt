@@ -1229,23 +1229,72 @@ fun PiToolMessage(msg: ChatMessage) {
             if (copied) Text("copied", color = toolBorder, fontFamily = piMono, fontSize = 10.sp)
         }
 
+        // For edit / multiEdit / write tools the actual change lives in the
+        // tool's args (oldText / newText / content), not in the result content
+        // (which is just "Successfully replaced N block(s)"). Render the
+        // structured diff when expanded; the collapsed preview stays as the
+        // result string so it still shows "Successfully replaced 1 block(s)".
+        val tn = msg.toolName.lowercase()
+        val isEditLike = tn == "edit" || tn == "multiedit" || tn == "multi_edit"
+        val isWrite = tn == "write"
+        val hunks = if (isEditLike) parseEdits(msg.toolArgs) else emptyList()
+        val writeContent = if (isWrite) parseWriteContent(msg.toolArgs) else null
+
         // ⎿ first-line excerpt (collapsed) OR full body (expanded)
-        if (msg.content.isNotBlank()) {
+        if (msg.content.isNotBlank() || hunks.isNotEmpty() || writeContent != null) {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Top, modifier = Modifier.padding(top = 1.dp)) {
                 Text("  ⎿", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
                 if (expanded) {
-                    if (isCode && lineCount > 1) {
-                        PiCodeBlock(msg.content.take(3000))
-                    } else {
-                        Text(msg.content, color = textSecondary, fontFamily = piMono, fontSize = 12.sp)
+                    when {
+                        hunks.isNotEmpty() -> Column {
+                            hunks.forEach { (oldT, newT) -> PiEditHunk(oldT, newT) }
+                            if (msg.content.isNotBlank()) Text(msg.content, color = textMuted, fontFamily = piMono, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+                        }
+                        writeContent != null -> Column {
+                            PiWriteContent(writeContent)
+                            if (msg.content.isNotBlank()) Text(msg.content, color = textMuted, fontFamily = piMono, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
+                        }
+                        isCode && lineCount > 1 -> PiCodeBlock(msg.content.take(3000))
+                        else -> Text(msg.content, color = textSecondary, fontFamily = piMono, fontSize = 12.sp)
                     }
                 } else {
-                    val preview = firstLine.take(80) + if (firstLine.length > 80 || lineCount > 1) "…" else ""
+                    val preview = when {
+                        hunks.isNotEmpty() -> "${hunks.size} edit${if (hunks.size == 1) "" else "s"} · tap to view diff"
+                        writeContent != null -> "${writeContent.count { it == '\n' } + 1} lines · tap to view"
+                        else -> firstLine.take(80) + if (firstLine.length > 80 || lineCount > 1) "…" else ""
+                    }
                     Text(preview, color = textMuted, fontFamily = piMono, fontSize = 12.sp, maxLines = 1)
                 }
             }
         }
     }
+}
+
+/**
+ * Parse pi's edit / multiEdit args (`{path, edits: [{oldText, newText}, ...]}`)
+ * into pairs of (oldText, newText). Returns empty list on any parse failure or
+ * non-edit-shaped args — caller falls back to the existing result rendering.
+ */
+fun parseEdits(argsJson: String): List<Pair<String, String>> {
+    if (argsJson.isBlank()) return emptyList()
+    val m = try { com.piremote.JP.p(argsJson) } catch (_: Throwable) { null } ?: return emptyList()
+    val arr = m["edits"] as? List<*> ?: return emptyList()
+    return arr.mapNotNull { e ->
+        if (e !is Map<*, *>) return@mapNotNull null
+        val oldT = com.piremote.Js.gets(e, "oldText") ?: com.piremote.Js.gets(e, "old_str") ?: return@mapNotNull null
+        val newT = com.piremote.Js.gets(e, "newText") ?: com.piremote.Js.gets(e, "new_str") ?: ""
+        oldT to newT
+    }
+}
+
+/**
+ * Parse pi's write args (`{path, content}`) and return the content string,
+ * or null if absent.
+ */
+fun parseWriteContent(argsJson: String): String? {
+    if (argsJson.isBlank()) return null
+    val m = try { com.piremote.JP.p(argsJson) } catch (_: Throwable) { null } ?: return null
+    return com.piremote.Js.gets(m, "content")
 }
 
 /** Code block with line numbers */
