@@ -207,6 +207,16 @@ class PiWebSocket : WebSocketListener() {
         val json = "{\"type\":\"slash_command\",\"command\":\"${Js.e(name)}\"$a$target}"
         sock?.send(json)
     }
+    /** Spawn a second pi process on the host. The new pi auto-loads this
+     *  same extension, finds the WS port busy, falls back to peer mode, and
+     *  joins as a separate agent — which the app surfaces as a new tab.
+     *
+     *  This is the correct path to "new session in the app": pi's extension
+     *  runtime can't survive ctx.newSession() (state.staleMessage is set and
+     *  never cleared), so we sidestep it by getting a fresh process. */
+    fun sendSpawnPeer() {
+        sock?.send("{\"type\":\"spawn_peer\"}")
+    }
     // UI protocol: send response for extension_ui_request dialogs
     fun sendUIResponse(id: String, value: String? = null, confirmed: Boolean? = null, cancelled: Boolean = false) {
         val escId = Js.e(id)

@@ -298,6 +298,8 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         }
         _ws.sendSlashCommand(command, args, _selectedSession.value)
     }
+    /** Spawn a new pi peer process on the host. Routes to PiWebSocket.sendSpawnPeer. */
+    fun spawnPeer() { _ws.sendSpawnPeer() }
     class Factory(private val ws: PiWebSocket, private val ctx: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(c: Class<T>): T = ChatViewModel(ws, ctx) as T

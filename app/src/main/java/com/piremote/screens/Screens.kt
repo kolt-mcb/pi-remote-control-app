@@ -364,10 +364,14 @@ fun SessionsScreen(
             }
             Spacer(Modifier.height(8.dp))
 
-            // [+ New session] — sends /new to the selected agent, which calls
-            // ctx.newSession() on pi. Extension auto-broadcasts a "New session
-            // started." notify banner; we navigate back to chat immediately so
-            // the user sees that banner against the fresh conversation.
+            // [+ New session] — spawns a separate pi process on the host
+            // (peer mode) instead of calling /new on the current pi. The old
+            // /new path went through ctx.newSession(), which permanently
+            // invalidates the extension's runtime — every subsequent slash
+            // command then failed until pi was restarted. Spawning a new
+            // process sidesteps that entirely: each pi has its own
+            // extension lifecycle, and the new one joins this host as a
+            // peer agent → shows up as a separate tab.
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
                 horizontalArrangement = Arrangement.End
@@ -376,8 +380,12 @@ fun SessionsScreen(
                     modifier = Modifier
                         .border(0.5.dp, accent, RoundedCornerShape(0.dp))
                         .clickable(enabled = sessions.isNotEmpty()) {
-                            vm.sendSlashCommand("new")
-                            vm.showChatScreen()
+                            vm.spawnPeer()
+                            // Don't navigate to chat yet — the peer takes a
+                            // moment to boot and join. The notify banner
+                            // ("Launching a new pi peer…") will appear; the
+                            // user can stay on the Sessions screen to watch
+                            // the new tab appear in the pill row.
                         }
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
