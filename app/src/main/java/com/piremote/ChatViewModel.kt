@@ -131,7 +131,12 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         _ws.notifyBannerFlow, _ws.uiTitleFlow, _ws.clientCountFlow, _ws.turnSummaryFlow
     )
 
-    fun setSelectedSession(id: String) { _selectedSession.value = id }
+    fun setSelectedSession(id: String) {
+        _selectedSession.value = id
+        // Tell the WS which agent's flows the UI is showing. Drives messageFlow,
+        // assistingTextFlow, busyFlow, turnSummaryFlow all at once.
+        _ws.selectAgent(id)
+    }
 
     fun setServerUrl(u: String) { _url.value = u }
     fun setInputText(t: String) { _inp.value = t }
@@ -205,7 +210,9 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 val stillPresent = sessions.any { it.id == current }
                 if (current.isBlank() || !stillPresent) {
                     val self = sessions.firstOrNull { it.isSelf } ?: sessions.firstOrNull()
-                    _selectedSession.value = self?.id ?: ""
+                    val id = self?.id ?: ""
+                    _selectedSession.value = id
+                    if (id.isNotBlank()) _ws.selectAgent(id)
                 }
             }
         }

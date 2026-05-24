@@ -1,10 +1,16 @@
 package com.piremote
 
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.stateIn
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -22,8 +28,78 @@ class PiWebSocket : WebSocketListener() {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    private val _m = MutableStateFlow<List<ChatMessage>>(emptyList())
-    val messageFlow: StateFlow<List<ChatMessage>> get() = _m
+    // ── Per-agent state ────────────────────────────────────────────────
+    // Each connected pi agent (host or peer) gets its own AgentState bag so
+    // that two pis streaming in parallel don't smash each other's text
+    // accumulators. The selected agent's flows are surfaced as the back-compat
+    // messageFlow / busyFlow / etc. below, so the UI subscribes the same way
+    // it did before — it just now follows whichever tab is active.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    class AgentState(val id: String) {
+        // Display name + kind cache — populated from session_list. Optional;
+        // events that arrive before session_list still get a working state.
+        var name: String = ""
+        var isSelf: Boolean = false
+
+        val messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+        val assistingText = MutableStateFlow("")
+        val thinking = MutableStateFlow("")
+        val busy = MutableStateFlow(false)
+        val turnSummary = MutableStateFlow<TurnSummary?>(null)
+
+        // Streaming bookkeeping — was global before; now per-agent so two
+        // simultaneous text streams don't interfere.
+        var stxt = ""
+        val tbufs = mutableMapOf<String, StringBuilder>()
+        val turnToolCalls = mutableListOf<String>()
+        var agentStartedAt = 0L
+    }
+
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    private val agentMap = mutableMapOf<String, AgentState>()
+    private val _agents = MutableStateFlow<List<AgentState>>(emptyList())
+    val agentsFlow: StateFlow<List<AgentState>> get() = _agents
+
+    // Which agent's chat the UI is currently showing. Null until the first
+    // event arrives. Survives across reconnects so the user's tab choice sticks.
+    private val _selectedAgentId = MutableStateFlow<String?>(null)
+    val selectedAgentIdFlow: StateFlow<String?> get() = _selectedAgentId
+
+    fun selectAgent(id: String) { if (agentMap.containsKey(id)) _selectedAgentId.value = id }
+    fun getAgent(id: String?): AgentState? = id?.let { agentMap[it] }
+
+    /** Get or create the per-agent state for [id]. Newly-created agents auto-
+     *  publish to agentsFlow and become the default selection if none yet. */
+    private fun ensureAgent(id: String): AgentState =
+        agentMap.getOrPut(id) {
+            val s = AgentState(id)
+            _agents.value = agentMap.values.toList()
+            if (_selectedAgentId.value == null) _selectedAgentId.value = id
+            s
+        }
+
+    // ── Back-compat flows: follow the selected agent ──────────────────
+    // Defined as derived flatMapLatest of (_selectedAgentId → agent.<flow>) so
+    // existing UI code that collected messageFlow/busyFlow/etc. transparently
+    // sees the active tab's stream.
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val messageFlow: StateFlow<List<ChatMessage>> = _selectedAgentId
+        .flatMapLatest { id -> agentMap[id]?.messages ?: MutableStateFlow(emptyList()) }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val assistingTextFlow: StateFlow<String> = _selectedAgentId
+        .flatMapLatest { id -> agentMap[id]?.assistingText ?: MutableStateFlow("") }
+        .stateIn(scope, SharingStarted.Eagerly, "")
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val busyFlow: StateFlow<Boolean> = _selectedAgentId
+        .flatMapLatest { id -> agentMap[id]?.busy ?: MutableStateFlow(false) }
+        .stateIn(scope, SharingStarted.Eagerly, false)
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val turnSummaryFlow: StateFlow<TurnSummary?> = _selectedAgentId
+        .flatMapLatest { id -> agentMap[id]?.turnSummary ?: MutableStateFlow<TurnSummary?>(null) }
+        .stateIn(scope, SharingStarted.Eagerly, null)
+
+    // ── Global state (not per-agent) ──────────────────────────────────
     private val _sessions = MutableStateFlow<List<RemoteSession>>(emptyList())
     val sessionListFlow: StateFlow<List<RemoteSession>> get() = _sessions
     private val _commands = MutableStateFlow<List<RemoteCommand>>(emptyList())
@@ -57,19 +133,9 @@ class PiWebSocket : WebSocketListener() {
 
     private val _s = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     val statusFlow: StateFlow<ConnectionStatus> get() = _s
-    private val _busy = MutableStateFlow(false)
-    val busyFlow: StateFlow<Boolean> get() = _busy
-    private val _a = MutableStateFlow("")
-    val assistingTextFlow: StateFlow<String> get() = _a
-    private val _thinking = MutableStateFlow("")
-    private var stxt = ""
-    private val tbufs = mutableMapOf<String, StringBuilder>()
 
-    // Turn summary: tracks tool calls during the current agent turn
-    private val _turnSummary = MutableStateFlow<TurnSummary?>(null)
-    val turnSummaryFlow: StateFlow<TurnSummary?> get() = _turnSummary
-    private val turnToolCalls = mutableListOf<String>()
-    private var agentStartedAt = 0L
+    // _busy / _a / _thinking / _turnSummary / stxt / tbufs / turnToolCalls /
+    // agentStartedAt were moved into AgentState above. Per-agent now.
 
     // One-shot signal emitted on agent_end so the VM can post a "pi is ready"
     // notification when the app is backgrounded. SharedFlow (not StateFlow)
@@ -153,9 +219,24 @@ class PiWebSocket : WebSocketListener() {
         _uiRequests.value = _uiRequests.value.filter { it.id != id }
     }
 
-    // Re-inject saved DB messages into the flow (called on reconnect)
+    /**
+     * Re-inject saved DB messages on reconnect. The DB schema doesn't track
+     * agentId, so all saved messages land on a single placeholder "self"
+     * AgentState. When session_list arrives and identifies the real self
+     * agent, handleSessions migrates these messages onto that agent.
+     */
     fun repoMessages(saved: List<ChatMessage>) {
-        _m.value = _m.value + saved
+        if (saved.isEmpty()) return
+        val placeholder = ensureAgent(REPO_PLACEHOLDER_ID)
+        placeholder.name = "pi"
+        placeholder.isSelf = true
+        placeholder.messages.value = placeholder.messages.value + saved
+    }
+    companion object {
+        // Sentinel ID used for saved-message restore before any session_list
+        // arrives. handleSessions promotes this state onto the real self agent
+        // once its id is known.
+        const val REPO_PLACEHOLDER_ID = "__repo_placeholder__"
     }
     private fun send(type: String, txt: String, targetAgentId: String = "", images: List<String> = emptyList()) {
         val target = if (targetAgentId.isNotBlank()) ",\"targetAgentId\":\"${Js.e(targetAgentId)}\"" else ""
@@ -186,8 +267,6 @@ class PiWebSocket : WebSocketListener() {
     override fun onOpen(ws: WebSocket, r: okhttp3.Response) {
         Log.d(WS_TAG, "OPEN - Connected"); _s.value = ConnectionStatus.Connected
         retryCount = 0
-        _thinking.value = ""
-        stxt = ""
         // Request session list and command list on connect
         sock?.send("{\"type\":\"get_sessions\"}")
         sock?.send("{\"type\":\"get_commands\"}")
@@ -214,28 +293,56 @@ class PiWebSocket : WebSocketListener() {
     override fun onClosed(ws: WebSocket, code: Int, reason: String) {
         Log.d(WS_TAG, "CLOSED code=$code reason=$reason")
         _s.value = ConnectionStatus.Disconnected
-        _busy.value = false
+        // Clear busy on every known agent — no global busy flag now.
+        agentMap.values.forEach { it.busy.value = false }
     }
 
     private fun dispatch(raw: String) {
         val j = JP.p(raw) ?: return
         val tp = Js.gets(j, "type") ?: return
-        if (tp == "agent_start") { _busy.value = true; stxt = ""; tbufs.clear(); _thinking.value = ""; turnToolCalls.clear(); agentStartedAt = System.currentTimeMillis() }
-        if (tp == "agent_end") {
-            _busy.value = false; es(null); buildTurnSummary()
-            // Emit a one-shot done event for backgrounded-notification handling.
-            // Only fires on agent_end (not on socket close), so disconnects
-            // don't trigger spurious notifications.
-            val dur = if (agentStartedAt > 0) System.currentTimeMillis() - agentStartedAt else 0L
-            _agentDone.tryEmit(AgentDoneEvent(summary = _turnSummary.value, durationMs = dur))
-            agentStartedAt = 0L
+
+        // Per-agent events: route to the right AgentState by event.agentId.
+        // Extension stamps agentId on every agent_*/message_*/tool_*/turn_*
+        // event before broadcast (see extension.ts emitAgentEvent), so any
+        // event in the perAgentTypes set will have one.
+        val perAgentTypes = setOf(
+            "agent_start", "agent_end",
+            "message_start", "message_end", "message_update",
+            "tool_start", "tool_update", "tool_end",
+            "turn_start", "turn_end"
+        )
+        if (tp in perAgentTypes) {
+            val agentId = Js.gets(j, "agentId")
+            if (agentId.isNullOrBlank()) return  // can't route without it
+            val state = ensureAgent(agentId)
+            when (tp) {
+                "agent_start" -> {
+                    state.busy.value = true
+                    state.stxt = ""
+                    state.tbufs.clear()
+                    state.thinking.value = ""
+                    state.turnToolCalls.clear()
+                    state.agentStartedAt = System.currentTimeMillis()
+                }
+                "agent_end" -> {
+                    state.busy.value = false
+                    es(state, null)
+                    buildTurnSummary(state)
+                    val dur = if (state.agentStartedAt > 0) System.currentTimeMillis() - state.agentStartedAt else 0L
+                    _agentDone.tryEmit(AgentDoneEvent(summary = state.turnSummary.value, durationMs = dur))
+                    state.agentStartedAt = 0L
+                }
+                "message_start" -> msgStart(state, j)
+                "message_end"   -> { val mm = JP.nj(j, "message"); if (mm != null) msgEnd(state, mm) }
+                "message_update" -> msgUpd(state, j)
+                "tool_start"  -> toolStart(state, j)
+                "tool_update" -> toolUpdate(state, j)
+                "tool_end"    -> toolEnd(state, j)
+                // turn_start/turn_end no-op for now — could track turn index per agent
+            }
+            return
         }
-        if (tp == "message_start") msgStart(j)
-        if (tp == "message_end") { val mm = JP.nj(j, "message"); if (mm != null) msgEnd(mm) }
-        if (tp == "message_update") msgUpd(j)
-        if (tp == "tool_start") toolStart(j)
-        if (tp == "tool_update") toolUpdate(j)
-        if (tp == "tool_end") toolEnd(j)
+
         if (tp == "compaction_start") _compacting.value = true
         if (tp == "compaction_end") { _compacting.value = false; _retryStatus.value = null }
         if (tp == "auto_retry_start") {
@@ -255,12 +362,6 @@ class PiWebSocket : WebSocketListener() {
         if (tp == "connected") {
             val count = (j["clients"] as? Number)?.toInt() ?: 0
             _clientCount.value = count
-        }
-        if (tp == "turn_start") {
-            // No-op for now — could track turn index per session
-        }
-        if (tp == "turn_end") {
-            // No-op for now
         }
         // TUI input delivery confirmation (from DOOM/remote-control)
         // Ack is enough; tui_input broadcast just means the key was relayed
@@ -290,19 +391,19 @@ class PiWebSocket : WebSocketListener() {
         }
     }
 
-    private fun msgStart(j: Map<*, *>) {
+    private fun msgStart(state: AgentState, j: Map<*, *>) {
         val mm = JP.nj(j, "message") ?: return
         val role = Js.gets(mm, "role") ?: return
         // pi normalizes message.content into an array of typed blocks
         // ([{type:"text",text:"hi"}, {type:"image",...}, ...]); plain-string
         // content also appears for some legacy paths. extractText handles both.
         val content = extractText(mm)
-        if (role == "user") _m.value += ChatMessage(type = MessageToolType.User, content = content)
+        if (role == "user") state.messages.value = state.messages.value + ChatMessage(type = MessageToolType.User, content = content)
         if (role == "toolResult") {
             val tid = Js.gets(mm, "toolCallId") ?: ""
             // Skip if tool_end already created this ToolResult from streaming
-            if (!_m.value.any { it.toolCallId == tid && it.type == MessageToolType.ToolResult }) {
-                _m.value += ChatMessage(
+            if (!state.messages.value.any { it.toolCallId == tid && it.type == MessageToolType.ToolResult }) {
+                state.messages.value = state.messages.value + ChatMessage(
                     type = MessageToolType.ToolResult,
                     toolCallId = tid,
                     toolName = Js.gets(mm, "toolName") ?: "?",
@@ -336,28 +437,28 @@ class PiWebSocket : WebSocketListener() {
         return ""
     }
 
-    private fun msgEnd(j: Map<*, *>) {
+    private fun msgEnd(state: AgentState, j: Map<*, *>) {
         val role = Js.gets(j, "role")
-        if (role == "assistant") es(null)
+        if (role == "assistant") es(state, null)
     }
 
-    private fun msgUpd(j: Map<*, *>) {
+    private fun msgUpd(state: AgentState, j: Map<*, *>) {
         val ev = Js.gets(j, "eventType") ?: return
-        if (ev == "text_start") { stxt = ""; addP() }
-        if (ev == "text_delta") { val d = Js.gets(j, "delta") ?: return; stxt += d; pushSt(stxt); _a.value = stxt }
-        if (ev == "text_end") es(stxt)
-        if (ev == "thinking_start") _thinking.value = ""
-        if (ev == "thinking_delta") { val d = Js.gets(j, "delta") ?: return; _thinking.value += d; _a.value = _thinking.value }
+        if (ev == "text_start") { state.stxt = ""; addP(state) }
+        if (ev == "text_delta") { val d = Js.gets(j, "delta") ?: return; state.stxt += d; pushSt(state, state.stxt); state.assistingText.value = state.stxt }
+        if (ev == "text_end") es(state, state.stxt)
+        if (ev == "thinking_start") state.thinking.value = ""
+        if (ev == "thinking_delta") { val d = Js.gets(j, "delta") ?: return; state.thinking.value += d; state.assistingText.value = state.thinking.value }
         if (ev == "thinking_end") {
             // Convert thinking text to a Thinking message type instead of dropping it
-            val thinkingText = _thinking.value
+            val thinkingText = state.thinking.value
             if (thinkingText.isNotBlank()) {
-                _m.value += ChatMessage(type = MessageToolType.Thinking, content = thinkingText)
+                state.messages.value = state.messages.value + ChatMessage(type = MessageToolType.Thinking, content = thinkingText)
             } else {
                 // Remove blank streaming placeholders
-                _m.value = _m.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
+                state.messages.value = state.messages.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
             }
-            _thinking.value = ""
+            state.thinking.value = ""
             // Don't clear stxt here: pi can interleave thinking and text streams,
             // and thinking_end often arrives AFTER text_delta has populated stxt
             // (e.g. Qwen3.6: thinking_start → text_start → text_delta → thinking_end
@@ -365,11 +466,11 @@ class PiWebSocket : WebSocketListener() {
             // drop the Streaming bubble, and never produce the Assistant message.
             // The text stream's own text_end → es(stxt) clears stxt at the right time.
         }
-        if (ev == "done") es(null)
-        if (ev == "error") { ss("Err: " + (Js.gets(j, "message") ?: "")) }
+        if (ev == "done") es(state, null)
+        if (ev == "error") { es(state, "Err: " + (Js.gets(j, "message") ?: "")) }
     }
 
-    private fun toolStart(j: Map<*, *>) {
+    private fun toolStart(state: AgentState, j: Map<*, *>) {
         val id = Js.gets(j, "toolCallId") ?: ""
         val nm = Js.gets(j, "toolName") ?: "?"
         // Re-serialize the parsed args back to JSON. j["args"] is a Map from
@@ -377,35 +478,35 @@ class PiWebSocket : WebSocketListener() {
         // can't be re-parsed downstream — every renderer that tried fell back
         // to a 60-char preview.
         val argsJson = Js.write(j["args"])
-        tbufs[id] = StringBuilder()
-        turnToolCalls.add(nm)
-        _m.value += ChatMessage(toolCallId = id, type = MessageToolType.Streaming, toolName = nm, toolArgs = argsJson)
+        state.tbufs[id] = StringBuilder()
+        state.turnToolCalls.add(nm)
+        state.messages.value = state.messages.value + ChatMessage(toolCallId = id, type = MessageToolType.Streaming, toolName = nm, toolArgs = argsJson)
     }
 
-    private fun toolUpdate(j: Map<*, *>) {
+    private fun toolUpdate(state: AgentState, j: Map<*, *>) {
         val id = Js.gets(j, "toolCallId") ?: ""
         val content = Js.gets(j, "content") ?: ""
-        val buf = tbufs[id]
+        val buf = state.tbufs[id]
         if (buf != null) {
             buf.append(content)
-            val ml = _m.value.toMutableList()
+            val ml = state.messages.value.toMutableList()
             val idx = ml.indexOfLast { it.toolCallId == id && it.type == MessageToolType.Streaming }
             if (idx >= 0) {
                 ml[idx] = ml[idx].copy(content = buf.toString())
-                _m.value = ml
+                state.messages.value = ml
             }
         }
     }
 
-    private fun toolEnd(j: Map<*, *>) {
+    private fun toolEnd(state: AgentState, j: Map<*, *>) {
         val id = Js.gets(j, "toolCallId") ?: ""
         val nm = Js.gets(j, "toolName") ?: "?"
         val remoteContent = Js.gets(j, "content") ?: ""
         val isError = (j["isError"] as? Boolean) ?: false
-        val bufferedContent = tbufs[id]?.toString().orEmpty()
+        val bufferedContent = state.tbufs[id]?.toString().orEmpty()
         val content = if (remoteContent.isNotBlank()) remoteContent else bufferedContent
 
-        val ml = _m.value.toMutableList()
+        val ml = state.messages.value.toMutableList()
         val idx = ml.indexOfLast { it.toolCallId == id && it.type == MessageToolType.Streaming }
         if (idx >= 0) {
             ml[idx] = ChatMessage(
@@ -416,64 +517,63 @@ class PiWebSocket : WebSocketListener() {
                 isError = isError,
                 timestamp = ml[idx].timestamp
             )
-            _m.value = ml
+            state.messages.value = ml
         } else {
-            _m.value = ml + ChatMessage(
+            state.messages.value = ml + ChatMessage(
                 toolCallId = id, type = MessageToolType.ToolResult,
                 toolName = nm, content = content, isError = isError
             )
         }
-        tbufs.remove(id)
+        state.tbufs.remove(id)
     }
 
     // Build a compact summary of tools used during the last turn
-    private fun buildTurnSummary() {
-        if (turnToolCalls.isEmpty()) {
-            _turnSummary.value = null
+    private fun buildTurnSummary(state: AgentState) {
+        if (state.turnToolCalls.isEmpty()) {
+            state.turnSummary.value = null
             return
         }
-        val counts = turnToolCalls.groupingBy { it }.eachCount()
+        val counts = state.turnToolCalls.groupingBy { it }.eachCount()
         val toolsUsed = counts.entries
             .sortedByDescending { it.value }
             .map { (name, count) -> ToolCallSummary(name, count) }
-        _turnSummary.value = TurnSummary(
+        state.turnSummary.value = TurnSummary(
             toolsUsed = toolsUsed,
-            totalCalls = turnToolCalls.size
+            totalCalls = state.turnToolCalls.size
         )
     }
 
-    private fun addP() {
-        if (!_m.value.any { it.type == MessageToolType.Streaming && it.content == "" })
-            _m.value += ChatMessage(type = MessageToolType.Streaming)
+    private fun addP(state: AgentState) {
+        if (!state.messages.value.any { it.type == MessageToolType.Streaming && it.content == "" })
+            state.messages.value = state.messages.value + ChatMessage(type = MessageToolType.Streaming)
     }
-    private fun pushSt(t: String) {
+    private fun pushSt(state: AgentState, t: String) {
         // Match the last Streaming bubble unconditionally — pushSt is called with
         // the *accumulated* delta text, and predicating on content=="" meant only
         // the first delta ever landed in the persisted message; subsequent deltas
         // silently no-op'd and the bubble froze at the first chunk's text.
-        val ml = _m.value.toMutableList()
+        val ml = state.messages.value.toMutableList()
         val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
-        if (idx >= 0) { ml[idx] = ml[idx].copy(content = t); _m.value = ml }
+        if (idx >= 0) { ml[idx] = ml[idx].copy(content = t); state.messages.value = ml }
     }
-    private fun es(finalText: String?) {
-        val sub = finalText ?: stxt
+    private fun es(state: AgentState, finalText: String?) {
+        val sub = finalText ?: state.stxt
         if (sub.isNotBlank()) {
-            val ml = _m.value.toMutableList()
+            val ml = state.messages.value.toMutableList()
             val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
             // Always transition the last Streaming bubble in-place; the old
             // isEmpty() guard caused a second Assistant message to be appended
             // when the bubble had already been populated by pushSt.
             if (idx >= 0) {
                 ml[idx] = ml[idx].copy(type = MessageToolType.Assistant, content = sub)
-                _m.value = ml
-            } else { _m.value = ml + ChatMessage(type = MessageToolType.Assistant, content = sub) }
+                state.messages.value = ml
+            } else { state.messages.value = ml + ChatMessage(type = MessageToolType.Assistant, content = sub) }
         } else {
-            _m.value = _m.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
+            state.messages.value = state.messages.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
         }
-        stxt = ""
-        _a.value = ""
+        state.stxt = ""
+        state.assistingText.value = ""
     }
-    private fun ss(sub: String) { es(sub) }
     private fun handleCommands(j: Map<*, *>) {
         val arr = j["commands"] ?: return
         if (arr !is List<*>) return
@@ -501,6 +601,33 @@ class PiWebSocket : WebSocketListener() {
             )
         }
         _sessions.value = list
+
+        // Make sure every connected pi has an AgentState bucket, with name/
+        // kind populated from the session list so the tab row can label them.
+        for (s in list) {
+            if (s.id.isBlank()) continue
+            val a = ensureAgent(s.id)
+            a.name = s.name
+            a.isSelf = s.isSelf
+        }
+        // If the placeholder agent (from saved-DB restore) is still around,
+        // promote it onto the real self agent now that we know its id.
+        val placeholder = agentMap[REPO_PLACEHOLDER_ID]
+        val self = list.firstOrNull { it.isSelf }
+        if (placeholder != null && self != null && self.id != REPO_PLACEHOLDER_ID) {
+            val selfState = ensureAgent(self.id)
+            // Merge: prepend placeholder's saved history before any live
+            // messages the self agent has already accumulated.
+            selfState.messages.value = placeholder.messages.value + selfState.messages.value
+            agentMap.remove(REPO_PLACEHOLDER_ID)
+            _agents.value = agentMap.values.toList()
+            if (_selectedAgentId.value == REPO_PLACEHOLDER_ID) _selectedAgentId.value = self.id
+        }
+        // Prefer the self agent as the default selection if nothing is selected
+        // (or the selection points at a vanished agent).
+        val curr = _selectedAgentId.value
+        val stillPresent = curr != null && agentMap.containsKey(curr)
+        if (!stillPresent) _selectedAgentId.value = self?.id ?: list.firstOrNull()?.id
     }
 
     private fun handleExtensionUI(j: Map<*, *>) {
