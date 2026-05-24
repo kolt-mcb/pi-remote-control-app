@@ -342,9 +342,14 @@ fun SessionsScreen(
     selectedSession: String,
     compacting: Boolean = false,
     retryStatus: String? = null,
-    clientCount: Int = 0
+    clientCount: Int = 0,
+    savedSessions: List<com.piremote.SavedSession> = emptyList()
 ) {
     val activeSession = sessions.find { it.id == selectedSession }
+
+    // Refresh the saved-session list once when this screen is opened. The
+    // response repopulates savedSessionsFlow → savedSessions param.
+    LaunchedEffect(Unit) { vm.refreshSavedSessions() }
     
     Box(modifier = Modifier.fillMaxSize().background(bg)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -408,11 +413,43 @@ fun SessionsScreen(
                     }
                 }
             } else {
-                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 6.dp)) {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 6.dp)) {
                     items(sessions, key = { it.id }) { session ->
                         val isSelected = session.id == selectedSession
                         val isBusy = session.status == "busy"
                         SessionCard(session, isSelected, isBusy) { vm.setSelectedSession(session.id); vm.showChatScreen() }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            // ── Saved sessions ────────────────────────────────────────
+            // Tap any row to spawn `pi --session <path>` as a peer. The
+            // resumed pi joins as a new agent, surfaces as a new tab.
+            // (Direct ctx.switchSession can't be used from an extension —
+            // see PR #20 / commit message.)
+            PiBox(header = "Saved sessions", borderColor = borderMuted) {
+                Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
+                    if (savedSessions.isEmpty()) {
+                        Text("No saved sessions yet.", color = textMuted, fontFamily = piMono, fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp))
+                    } else {
+                        Text(
+                            "${savedSessions.size} session${if (savedSessions.size != 1) "s" else ""} · tap to resume as a new tab",
+                            color = textMuted, fontFamily = piMono, fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                        Spacer(Modifier.height(2.dp))
+                        LazyColumn(modifier = Modifier.weight(1f, fill = false).heightIn(max = 320.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                            contentPadding = PaddingValues(horizontal = 4.dp)) {
+                            items(savedSessions, key = { it.path }) { saved ->
+                                SavedSessionRow(saved) {
+                                    vm.spawnPeerWithSession(saved.path)
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -427,6 +464,27 @@ fun SessionsScreen(
             }
 
             Spacer(Modifier.weight(1f))
+        }
+    }
+}
+
+/** Row in the saved-sessions list. Tap to spawn `pi --session <path>` as a peer. */
+@Composable
+fun SavedSessionRow(s: com.piremote.SavedSession, onTap: () -> Unit) {
+    val label = s.name.ifBlank { s.firstMessage }.ifBlank { s.path.substringAfterLast('/') }
+    val trimmed = if (label.length > 40) label.take(39) + "…" else label
+    val whenStr = sessionTime(s.modified)
+    Row(
+        modifier = Modifier.fillMaxWidth()
+            .clickable { onTap() }
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text("▸ ", color = accent, fontFamily = piMono, fontSize = 11.sp)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(trimmed, color = textPrimary, fontFamily = piMono, fontSize = 12.sp, maxLines = 1)
+            Text("${s.messageCount} msg${if (s.messageCount != 1) "s" else ""} · $whenStr",
+                color = textMuted, fontFamily = piMono, fontSize = 10.sp, maxLines = 1)
         }
     }
 }

@@ -95,6 +95,7 @@ class MainActivity : ComponentActivity() {
                 val uiTitle by ws.uiTitleFlow.collectAsState()
                 val clientCount by ws.clientCountFlow.collectAsState()
                 val turnSummary by ws.turnSummaryFlow.collectAsState()
+                val savedSessions by ws.savedSessionsFlow.collectAsState()
                 // Generic TUI render frames from any Pi extension
                 val renderFrame by ws.renderFrameFlow.collectAsState()
                 // Attached images for the current message
@@ -166,7 +167,7 @@ class MainActivity : ComponentActivity() {
                             onRemoveImage = { uri: Uri -> vm.removeImage(uri) }
                         )
                     status == ConnectionStatus.Connected ->
-                        SessionsScreen(vm, sessions, selectedSession, compacting, retryStatus, clientCount)
+                        SessionsScreen(vm, sessions, selectedSession, compacting, retryStatus, clientCount, savedSessions)
                     else ->
                         ConnectScreen(vm, url, inp, ms, assist, status, urlHistory, sessions)
                 }

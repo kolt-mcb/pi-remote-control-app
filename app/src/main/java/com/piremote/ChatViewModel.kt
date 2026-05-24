@@ -300,6 +300,15 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     }
     /** Spawn a new pi peer process on the host. Routes to PiWebSocket.sendSpawnPeer. */
     fun spawnPeer() { _ws.sendSpawnPeer() }
+
+    /** Spawn a peer resuming a specific saved session — equivalent to
+     *  `pi --session <path>` on the host. The new pi joins the host as a
+     *  peer; the app shows it as a new tab pre-loaded with that history. */
+    fun spawnPeerWithSession(path: String) { _ws.sendSpawnPeer(path) }
+
+    /** Refresh the saved-session list. The browser screen calls this on
+     *  entry; the response shows up in [PiWebSocket.savedSessionsFlow]. */
+    fun refreshSavedSessions() { _ws.sendGetSavedSessions() }
     class Factory(private val ws: PiWebSocket, private val ctx: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(c: Class<T>): T = ChatViewModel(ws, ctx) as T

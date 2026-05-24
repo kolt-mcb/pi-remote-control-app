@@ -104,6 +104,8 @@ class PiWebSocket : WebSocketListener() {
     val sessionListFlow: StateFlow<List<RemoteSession>> get() = _sessions
     private val _commands = MutableStateFlow<List<RemoteCommand>>(emptyList())
     val commandListFlow: StateFlow<List<RemoteCommand>> get() = _commands
+    private val _savedSessions = MutableStateFlow<List<SavedSession>>(emptyList())
+    val savedSessionsFlow: StateFlow<List<SavedSession>> get() = _savedSessions
     // Extension UI: pending dialog requests awaiting response
     private val _uiRequests = MutableStateFlow<List<ExtensionUIRequest>>(emptyList())
     val uiRequestFlow: StateFlow<List<ExtensionUIRequest>> get() = _uiRequests
@@ -213,9 +215,20 @@ class PiWebSocket : WebSocketListener() {
      *
      *  This is the correct path to "new session in the app": pi's extension
      *  runtime can't survive ctx.newSession() (state.staleMessage is set and
-     *  never cleared), so we sidestep it by getting a fresh process. */
-    fun sendSpawnPeer() {
-        sock?.send("{\"type\":\"spawn_peer\"}")
+     *  never cleared), so we sidestep it by getting a fresh process.
+     *
+     *  If [sessionPath] is non-blank, the new pi is invoked with
+     *  `--session <path>` to resume that saved session — this is how the
+     *  saved-session browser surfaces a "tap to resume" action. */
+    fun sendSpawnPeer(sessionPath: String = "") {
+        val sp = if (sessionPath.isNotBlank()) ",\"sessionPath\":\"${Js.e(sessionPath)}\"" else ""
+        sock?.send("{\"type\":\"spawn_peer\"$sp}")
+    }
+
+    /** Ask the host for its list of saved pi sessions. Reply arrives as
+     *  type=saved_sessions; surfaced via [savedSessionsFlow]. */
+    fun sendGetSavedSessions() {
+        sock?.send("{\"type\":\"get_saved_sessions\"}")
     }
     // UI protocol: send response for extension_ui_request dialogs
     fun sendUIResponse(id: String, value: String? = null, confirmed: Boolean? = null, cancelled: Boolean = false) {
@@ -367,6 +380,7 @@ class PiWebSocket : WebSocketListener() {
             _uiRequests.value = _uiRequests.value.filter { it.id != id }
         }
         if (tp == "session_list") handleSessions(j)
+        if (tp == "saved_sessions") handleSavedSessions(j)
         if (tp == "command_list") handleCommands(j)
         // Missing handlers added:
         if (tp == "connected") {
@@ -640,6 +654,20 @@ class PiWebSocket : WebSocketListener() {
         if (!stillPresent) _selectedAgentId.value = self?.id ?: list.firstOrNull()?.id
     }
 
+    private fun handleSavedSessions(j: Map<*, *>) {
+        val arr = j["sessions"] as? List<*> ?: return
+        _savedSessions.value = arr.mapNotNull { s ->
+            if (s !is Map<*, *>) return@mapNotNull null
+            SavedSession(
+                path = (s["path"] as? String) ?: return@mapNotNull null,
+                name = (s["name"] as? String) ?: "",
+                firstMessage = (s["firstMessage"] as? String) ?: "",
+                messageCount = ((s["messageCount"] as? Number) ?: 0).toInt(),
+                modified = ((s["modified"] as? Number) ?: 0).toLong()
+            )
+        }
+    }
+
     private fun handleExtensionUI(j: Map<*, *>) {
         val method = Js.gets(j, "method") ?: return
         val id = Js.gets(j, "id") ?: return
@@ -824,6 +852,18 @@ data class ExtensionUIRequest(
 data class RemoteCommand(
     val name: String,
     val description: String
+)
+
+/** A saved pi session — name, first message preview, message count, last
+ *  modified epoch ms. Tap-to-resume from the saved-session browser sends
+ *  spawn_peer with sessionPath = [path], which the extension launches as
+ *  `pi --session <path>` in a new process. */
+data class SavedSession(
+    val path: String,
+    val name: String,
+    val firstMessage: String,
+    val messageCount: Int,
+    val modified: Long
 )
 
 data class RemoteSession(
