@@ -318,8 +318,10 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     }
 
     private fun extractHost(url: String): String {
+        // Strip scheme, path, and query so the `?token=...` secret never lands
+        // in the foreground-service / "pi is ready" notification text.
         return try {
-            url.replace("ws://", "").replace("wss://", "").split("/")[0]
+            url.substringAfter("://").substringBefore("/").substringBefore("?")
         } catch (_: Exception) { "Pi" }
     }
 }
