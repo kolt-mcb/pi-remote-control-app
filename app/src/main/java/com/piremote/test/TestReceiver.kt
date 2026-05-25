@@ -6,9 +6,7 @@ import android.content.Intent
 import android.util.Log
 import com.piremote.PiWebSocket
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.flow.first
 import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.piremote.dataStore
 
