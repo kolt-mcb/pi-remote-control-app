@@ -1,9 +1,16 @@
 package com.piremote.db
 
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
-@Entity(tableName = "chat_messages")
+// Unique (url, msgId) so @Insert(REPLACE) upserts in place — a message keeps
+// its msgId as it transitions Streaming → Assistant/ToolResult, so the final
+// content overwrites the earlier row instead of being dropped or duplicated.
+@Entity(
+    tableName = "chat_messages",
+    indices = [Index(value = ["url", "msgId"], unique = true)]
+)
 data class ChatMessageEntity(
     @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
     val msgId: String,

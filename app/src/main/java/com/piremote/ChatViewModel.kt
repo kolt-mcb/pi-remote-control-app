@@ -185,19 +185,23 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
             }
             if (rebuilt.isNotEmpty()) _ws.repoMessages(rebuilt)
         }
-        // Watch flow for persistence
+        // Persist on each turn-end (busy → false) rather than on every streaming
+        // token. Upserts the full message list; the unique (url, msgId) index lets
+        // REPLACE update rows in place, so final assistant/tool content is saved.
+        // (The old per-emission path inserted each message once as an empty
+        // Streaming placeholder and never updated it, and re-scanned the whole
+        // table on every text delta.) Transient Streaming bubbles are skipped.
         scope.launch {
-            _ws.messageFlow.collect { msgs ->
-                val existingIds = _dao.getAllByServerUrl(u).map { it.msgId }.toSet()
-                for ((idx, m) in msgs.withIndex()) {
-                    if (m.id !in existingIds) {
-                        _dao.insert(ChatMessageEntity(
-                            msgId = m.id, url = u, seq = idx,
-                            type = m.type.name, toolCallId = m.toolCallId,
-                            toolName = m.toolName, content = m.content, isError = m.isError,
-                            timestamp = m.timestamp
-                        ))
-                    }
+            _ws.busyFlow.collect { busy ->
+                if (busy) return@collect
+                _ws.messageFlow.value.forEachIndexed { idx, m ->
+                    if (m.type == MessageToolType.Streaming) return@forEachIndexed
+                    _dao.insert(ChatMessageEntity(
+                        msgId = m.id, url = u, seq = idx,
+                        type = m.type.name, toolCallId = m.toolCallId,
+                        toolName = m.toolName, content = m.content, isError = m.isError,
+                        timestamp = m.timestamp
+                    ))
                 }
             }
         }
