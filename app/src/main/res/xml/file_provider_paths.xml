@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Path mapping for the FileProvider declared in AndroidManifest.xml.
+  Only exposes the `updates/` subdirectory of getCacheDir(), which is where
+  the in-app updater drops downloaded APKs before handing them to the OS
+  package installer.
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

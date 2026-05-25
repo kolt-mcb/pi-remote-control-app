@@ -9,6 +9,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- Required to launch the OS package installer with a content:// URI
+         pointing at our downloaded APK. User has to also grant this in
+         Settings → Apps → Pi Remote → Install unknown apps on first use. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!--
@@ -45,6 +49,19 @@
             android:name=".PiService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <!-- FileProvider used by the in-app updater to hand the downloaded
+             APK to the OS package installer. APKs land in
+             getCacheDir()/updates/ and are shared as content:// URIs. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:grantUriPermissions="true"
+            android:exported="false">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_provider_paths" />
+        </provider>
 
         <!-- TestReceiver is registered only in src/debug/AndroidManifest.xml so
              release builds cannot be driven by external broadcasts. -->

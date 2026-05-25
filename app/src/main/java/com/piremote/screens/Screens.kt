@@ -47,6 +47,7 @@ import com.piremote.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 // ── Pi Terminal Font Family ────────────────────────────────────────────
 
@@ -288,18 +289,133 @@ fun ConnectScreen(
             // Quick Start Guide
             PiBox(header = "Quick Start", borderColor = borderMuted) {
                 Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                    Text("1  Run:  pi -e ~/pi-remote-control/extension.ts  ", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
-                    Text("2  In pi:  /remote-control                         ", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
-                    Text("3  Enter the ws:// URL shown above                ", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
+                    Text("1  pi install git:github.com/grunt3714-lgtm/pi-remote-control", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
+                    Text("2  Run:  pi   (extension auto-loads; QR + URL print on startup)", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
+                    Text("3  Scan the QR or paste the ws://…?token=…  URL above", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
                 }
             }
-            
+
             Spacer(Modifier.weight(1f))
         }
-        
-        // Version in bottom-right
-        Text("v0.1.0", color = textMuted.copy(alpha = 0.3f), fontFamily = piMono, fontSize = 9.sp,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp))
+
+        // Tappable version display in bottom-right doubles as the update
+        // entry point. Tap → fetches GitHub Releases → install prompt if a
+        // newer build exists. The component owns its own dialog state.
+        UpdateAffordance(modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp))
+    }
+}
+
+/**
+ * Bottom-corner version chip + update flow. Shows "vN · sha", tap to check
+ * GitHub Releases for a newer build. On hit, prompts to install; on download
+ * tap, fires the OS package installer with the new APK.
+ */
+@Composable
+fun UpdateAffordance(modifier: Modifier = Modifier) {
+    val ctx = LocalContext.current
+    val updater = remember { com.piremote.UpdateChecker(ctx.applicationContext) }
+    val currentCode = remember { updater.currentVersionCode() }
+    val currentName = remember { updater.currentVersionName() }
+    val scope = rememberCoroutineScope()
+
+    var checking by remember { mutableStateOf(false) }
+    var status by remember { mutableStateOf<String?>(null) }
+    var latest by remember { mutableStateOf<com.piremote.LatestRelease?>(null) }
+    var downloading by remember { mutableStateOf(false) }
+    var downloadPct by remember { mutableStateOf(0) }
+
+    // Brief "up to date" / error message auto-clears after a couple seconds.
+    LaunchedEffect(status) {
+        if (status != null) {
+            kotlinx.coroutines.delay(2500); status = null
+        }
+    }
+
+    Column(horizontalAlignment = Alignment.End, modifier = modifier) {
+        Text(
+            text = "v$currentCode · $currentName",
+            color = textMuted.copy(alpha = 0.5f),
+            fontFamily = piMono, fontSize = 9.sp,
+            modifier = Modifier.clickable(enabled = !checking && !downloading) {
+                checking = true
+                scope.launch {
+                    val r = updater.fetchLatest()
+                    checking = false
+                    if (r == null) {
+                        status = "couldn't reach updates"
+                    } else if (r.versionCode <= currentCode) {
+                        status = "up to date"
+                    } else {
+                        latest = r
+                    }
+                }
+            }
+        )
+        if (checking) {
+            Text("checking…", color = textMuted.copy(alpha = 0.7f), fontFamily = piMono, fontSize = 9.sp)
+        } else if (status != null) {
+            Text(status!!, color = textMuted.copy(alpha = 0.7f), fontFamily = piMono, fontSize = 9.sp)
+        }
+    }
+
+    // "Update available" dialog. Confirms before downloading 40MB.
+    latest?.let { r ->
+        if (!downloading) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { latest = null },
+                title = { Text("Update available", fontFamily = piMono, fontSize = 14.sp) },
+                text = {
+                    Column {
+                        Text("v$currentCode → v${r.versionCode}", fontFamily = piMono, fontSize = 12.sp)
+                        Spacer(Modifier.height(2.dp))
+                        Text(r.versionName, color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                        if (r.publishedAt.isNotBlank()) {
+                            Text("published ${r.publishedAt.take(10)}", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                        }
+                    }
+                },
+                confirmButton = {
+                    androidx.compose.material3.TextButton(onClick = {
+                        downloading = true
+                        downloadPct = 0
+                        scope.launch {
+                            val file = updater.downloadApk(r) { pct -> downloadPct = pct }
+                            downloading = false
+                            latest = null
+                            if (file != null) {
+                                updater.launchInstaller(file)
+                            } else {
+                                status = "download failed"
+                            }
+                        }
+                    }) { Text("Install") }
+                },
+                dismissButton = {
+                    androidx.compose.material3.TextButton(onClick = { latest = null }) {
+                        Text("Later")
+                    }
+                }
+            )
+        }
+    }
+
+    // Download progress dialog.
+    if (downloading) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { /* not dismissible mid-download */ },
+            title = { Text("Downloading", fontFamily = piMono, fontSize = 14.sp) },
+            text = {
+                Column {
+                    androidx.compose.material3.LinearProgressIndicator(
+                        progress = { downloadPct / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text("$downloadPct%", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
+                }
+            },
+            confirmButton = {},
+        )
     }
 }
 
