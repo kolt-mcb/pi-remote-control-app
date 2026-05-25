@@ -277,12 +277,10 @@ class PiWebSocket : WebSocketListener() {
 
     // ── Render Protocol ──
     // Send input from rendered TUI components back to the extension
-    fun sendRenderInput(renderId: String, value: String) {
+    fun sendInput(renderId: String, value: String) {
         val json = "{\"type\":\"input\",\"id\":\"${Js.e(renderId)}\",\"value\":\"${Js.e(value)}\"}"
         sock?.send(json)
     }
-    // Alias
-    fun sendInput(renderId: String, value: String) = sendRenderInput(renderId, value)
 
     override fun onOpen(ws: WebSocket, r: okhttp3.Response) {
         _s.value = ConnectionStatus.Connected
