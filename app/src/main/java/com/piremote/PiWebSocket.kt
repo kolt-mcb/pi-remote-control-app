@@ -837,13 +837,6 @@ data class ExtensionUIRequest(
     val options: List<String> = emptyList(),
     val placeholder: String? = null,
     val prefill: String? = null,
-    val widgetKey: String? = null,
-    val widgetLines: List<String>? = null,
-    val widgetPlacement: String? = null,
-    val statusKey: String? = null,
-    val statusText: String? = null,
-    val notifyType: String? = null,
-    val text: String? = null,   // for set_editor_text
     val timeout: Long? = null
 )
 
