@@ -87,18 +87,5 @@ object CodeUtils {
         return patterns.any { content.contains(it) }
     }
 
-    fun extractFilePath(content: String): String {
-        // Try: "file:///home/user/path/file.kt" → "/home/user/path/file.kt"
-        val m1 = Regex("file://([\\w./\\-]+)/(\\.[a-zA-Z0-9./\\-]+(?:\\.(?:kt|java|ts|js|xml|json|py|sh)))").find(content)
-        if (m1 != null) return "/${m1.groupValues[1]}${m1.groupValues[2]}"
-        // Try: "C:\path\file.kt"
-        val m2 = Regex("([a-zA-Z]:[/\\\\][\\w./\\-]+)\\.(kt|java|ts|js|xml|json|py|sh)").find(content)
-        if (m2 != null) return "${m2.groupValues[1]}.${m2.groupValues[2]}"
-        // Try: "home/user/path/file.kt"
-        val m3 = Regex("(home|src|android)[\\w./\\-]+\\.(kt|java|ts|js|xml|json|py|sh)").find(content)
-        if (m3 != null) return m3.groupValues[0]
-        return ""
-    }
-
     fun countLines(content: String): Int = content.split("\n").size
 }
