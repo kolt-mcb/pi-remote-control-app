@@ -256,6 +256,11 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 try { PiService.notifyDone(_ctx, host, summary, done.durationMs) } catch (_: Exception) {}
             }
         }
+        // An extension can prefill the input editor (ctx.ui.setEditorText); mirror
+        // that into the input field so the phone reflects the host's editor state.
+        scope.launch {
+            _ws.editorTextFlow.collect { _inp.value = it }
+        }
         _connectedScreen.value = ConnectedScreen.Chat
         _ws.connect(u)
     }

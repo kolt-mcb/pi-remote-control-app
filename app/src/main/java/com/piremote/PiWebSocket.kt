@@ -130,6 +130,10 @@ class PiWebSocket : WebSocketListener() {
     // Generic TUI render frames (any Pi extension component)
     private val _renderFrame = MutableStateFlow<RenderFrame?>(null)
     val renderFrameFlow: StateFlow<RenderFrame?> get() = _renderFrame
+    // Editor text an extension asked to prefill (ctx.ui.setEditorText). One-shot
+    // event, not retained state — the ViewModel drops it into the input field.
+    private val _editorText = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val editorTextFlow: SharedFlow<String> get() = _editorText
 
     private val _s = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     val statusFlow: StateFlow<ConnectionStatus> get() = _s
@@ -700,7 +704,7 @@ class PiWebSocket : WebSocketListener() {
             return
         }
         if (method == "set_editor_text") {
-            // TODO: apply to input field — requires callback to ViewModel
+            _editorText.tryEmit(Js.gets(j, "text") ?: "")
             return
         }
 
