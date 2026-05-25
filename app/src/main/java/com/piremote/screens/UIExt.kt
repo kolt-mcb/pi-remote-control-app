@@ -65,8 +65,7 @@ fun SelectDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String)
 
                 if (!req.message.isNullOrBlank()) {
                     Text(
-                        req.message,
-                        color = textSecondary,
+                        buildAnsiText(parseAnsiLine(req.message!!), textSecondary),
                         fontFamily = piMono,
                         fontSize = 12.sp,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
@@ -121,7 +120,7 @@ fun SelectDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String)
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("▸ ", color = accent, fontFamily = piMono, fontSize = 12.sp)
-                                Text(opt, color = textPrimary, fontFamily = piMono, fontSize = 12.sp)
+                                Text(buildAnsiText(parseAnsiLine(opt), textPrimary), fontFamily = piMono, fontSize = 12.sp)
                             }
                             HorizontalDivider(color = borderMuted.copy(alpha = 0.4f))
                         }
@@ -149,7 +148,7 @@ fun InputDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String) 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (req.message.isNullOrBlank().not()) {
                     Box(modifier = Modifier.border(BorderStroke(1.dp, borderMuted), RoundedCornerShape(0.dp)).padding(6.dp)) {
-                        Text(req.message!!, color = textSecondary, fontFamily = piMono, fontSize = 12.sp)
+                        Text(buildAnsiText(parseAnsiLine(req.message!!), textSecondary), fontFamily = piMono, fontSize = 12.sp)
                     }
                 }
                 Box(modifier = Modifier.border(BorderStroke(1.dp, accent), RoundedCornerShape(0.dp)).padding(8.dp)) {
@@ -199,7 +198,7 @@ fun NotifyBanner(msg: String, type: String) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)) {
             Text(icon, color = color, fontFamily = piMono, fontSize = 12.sp)
-            Text(msg, color = color, fontFamily = piMono, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 2)
+            Text(buildAnsiText(parseAnsiLine(msg), color), fontFamily = piMono, fontSize = 12.sp, modifier = Modifier.weight(1f), maxLines = 2)
         }
     }
 }
