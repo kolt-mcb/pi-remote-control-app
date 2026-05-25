@@ -15,7 +15,6 @@ import okhttp3.Request
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import java.util.concurrent.TimeUnit
-import com.piremote.theme.CodeUtils
 
 class PiWebSocket : WebSocketListener() {
     private var sock: WebSocket? = null

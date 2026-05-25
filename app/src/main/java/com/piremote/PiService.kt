@@ -9,7 +9,6 @@ import android.content.Context
 import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 
 private const val CHANNEL_ID = "pi_remote_connection"
 private const val NOTIFICATION_ID = 1001
