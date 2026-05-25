@@ -122,7 +122,6 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     }
 
     val connectedScreen = _connectedScreen
-    fun setConnectedScreen(s: ConnectedScreen) { _connectedScreen.value = s }
     fun showSessionsScreen() { _connectedScreen.value = ConnectedScreen.Sessions }
     fun showChatScreen() { _connectedScreen.value = ConnectedScreen.Chat }
 

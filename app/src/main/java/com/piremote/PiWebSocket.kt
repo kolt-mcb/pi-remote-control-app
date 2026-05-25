@@ -66,7 +66,6 @@ class PiWebSocket : WebSocketListener() {
     val selectedAgentIdFlow: StateFlow<String?> get() = _selectedAgentId
 
     fun selectAgent(id: String) { if (agentMap.containsKey(id)) _selectedAgentId.value = id }
-    fun getAgent(id: String?): AgentState? = id?.let { agentMap[it] }
 
     /** Get or create the per-agent state for [id]. Newly-created agents auto-
      *  publish to agentsFlow and become the default selection if none yet. */
