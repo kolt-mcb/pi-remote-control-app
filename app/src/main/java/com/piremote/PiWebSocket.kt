@@ -3,6 +3,8 @@ package com.piremote
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -290,12 +292,13 @@ class PiWebSocket : WebSocketListener() {
     }
     override fun onFailure(ws: WebSocket, t: Throwable, r: okhttp3.Response?) {
         val msg = t.message ?: "Connection failed"
-        // Auto-reconnect with increasing backoff (handled via a small delay)
+        // Auto-reconnect with increasing backoff: 2s, 4s, 8s, 16s, then capped
+        // at 32s. Runs on `scope` so it's cancellable and consistent with the
+        // rest of the class rather than spawning a raw thread per retry.
         if (retryCount < 10 && pendingUrl.isNotBlank()) {
             retryCount++
-            // Schedule reconnect on main thread via a simple delay
-            kotlin.concurrent.thread {
-                Thread.sleep(2000L shl minOf(retryCount - 1, 4)) // 2s, 4s, 8s, 16s, 32s, 64s... cap at 32s
+            scope.launch {
+                delay(2000L shl minOf(retryCount - 1, 4))
                 reconnect()
             }
         } else {
