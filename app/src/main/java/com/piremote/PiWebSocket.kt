@@ -274,7 +274,7 @@ class PiWebSocket : WebSocketListener() {
     // ── Game Protocol ──
     // Send game-touch events (DOOM keys via touch) to the extension
     fun sendGameTouch(key: String, pressed: Boolean) {
-        val json = "{\"type\":\"game_touch\",\"key\":\"$key\",\"pressed\"$pressed}"
+        val json = "{\"type\":\"game_touch\",\"key\":\"$key\",\"pressed\":$pressed}"
         sock?.send(json)
     }
 

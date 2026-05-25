@@ -980,7 +980,8 @@ fun ChatScreen(
                 steerMode = steerMode,
                 setSteerMode = { steerMode = it },
                 followUpMode = followUpMode,
-                setFollowUpMode = { followUpMode = it }
+                setFollowUpMode = { followUpMode = it },
+                commands = commands
             )
         }
         PiFooter(sessions, selectedSession, messages.size, compacting, retryStatus, clientCount)
@@ -1121,10 +1122,23 @@ fun PiTerminalInput(
     setSteerMode: (Boolean) -> Unit,
     followUpMode: Boolean,
     setFollowUpMode: (Boolean) -> Unit,
+    commands: List<com.piremote.RemoteCommand> = emptyList(),
     attachedImages: List<Uri> = emptyList(),
     onPickImages: () -> Unit = {},
     onRemoveImage: (Uri) -> Unit = {}
 ) {
+    // ── Slash command autocomplete row ─────────────────────────────
+    val isSlash = input.trimStart().startsWith("/") && !busy
+    val slashQuery = if (isSlash) {
+        val after = input.trimStart().substringAfter("/", "")
+        after.trim().lowercase().split(" ")[0]
+    } else ""
+    val matchedCommands = if (slashQuery.isBlank()) {
+        commands
+    } else {
+        commands.filter { it.name.lowercase().startsWith(slashQuery) }
+    }
+    val showAutocomplete = isSlash && matchedCommands.isNotEmpty()
     val cursorColor = when {
         steerMode -> thinkingMedium
         followUpMode -> accent
@@ -1137,15 +1151,14 @@ fun PiTerminalInput(
         else -> ""
     }
 
-    // Row: `>` + TextField
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(bg)
-            .imePadding()
-            .padding(horizontal = 6.dp, vertical = 2.dp)
-    ) {
+    Column(modifier = Modifier.fillMaxWidth().background(bg).imePadding()) {
+        // Row: `>` + TextField
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 2.dp)
+        ) {
         PiBlinkSigil(sigil = ">", color = cursorColor, active = input.isEmpty())
         Spacer(Modifier.width(4.dp))
         androidx.compose.material3.TextField(
@@ -1181,7 +1194,37 @@ fun PiTerminalInput(
                 }
             })
         )
+
+        // ── Slash command autocomplete chips ─────────────────────────
+        if (showAutocomplete) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(start = 16.dp, end = 4.dp, bottom = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                matchedCommands.take(12).forEach { cmd ->
+                    Box(
+                        modifier = Modifier
+                            .clickable { vm.setInputText("/${cmd.name}") }
+                            .border(0.5.dp, borderAccent, RoundedCornerShape(0.dp))
+                            .background(bgSecondary)
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("/", color = accent, fontFamily = piMono, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            Text(cmd.name, color = textPrimary, fontFamily = piMono, fontSize = 10.sp)
+                            if (cmd.description.isNotBlank()) {
+                                Text("— ${cmd.description.take(20)}", color = textMuted, fontFamily = piMono, fontSize = 9.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
+}
 }
 
 // ── Legacy boxed input (kept for compat) ──────────────────────────────
@@ -1202,7 +1245,8 @@ fun PiInputEditor(
     PiTerminalInput(
         vm = vm, input = input, busy = busy,
         steerMode = steerMode, setSteerMode = setSteerMode,
-        followUpMode = followUpMode, setFollowUpMode = setFollowUpMode
+        followUpMode = followUpMode, setFollowUpMode = setFollowUpMode,
+        commands = commands
     )
 }
 
