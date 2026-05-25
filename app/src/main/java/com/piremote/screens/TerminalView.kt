@@ -158,14 +158,19 @@ private fun parseSgrCodes(codes: List<String>, style: AnsiStyle): AnsiStyle {
     return s
 }
 
-/** Build a Compose AnnotatedString from ANSI segments */
-fun buildAnsiText(segments: List<Pair<String, AnsiStyle>>): androidx.compose.ui.text.AnnotatedString {
+/** Build a Compose AnnotatedString from ANSI segments. [defaultColor] is used
+ *  for text that carries no explicit ANSI foreground, so callers (e.g. the muted
+ *  status bar) keep their own base colour while still honouring embedded colours. */
+fun buildAnsiText(
+    segments: List<Pair<String, AnsiStyle>>,
+    defaultColor: Color = com.piremote.theme.textPrimary,
+): androidx.compose.ui.text.AnnotatedString {
     val builder = androidx.compose.ui.text.AnnotatedString.Builder()
     segments.forEach { (text, style) ->
         val fgColor = if (style.fgR >= 0) {
             val base = Color(style.fgR / 255f, style.fgG / 255f, style.fgB / 255f)
             if (style.dim) base.copy(alpha = 0.5f) else base
-        } else if (style.dim) com.piremote.theme.textMuted else com.piremote.theme.textPrimary
+        } else if (style.dim) com.piremote.theme.textMuted else defaultColor
         
         val bgColor = if (style.bgR >= 0) Color(style.bgR / 255f, style.bgG / 255f, style.bgB / 255f) else Color.Transparent
 

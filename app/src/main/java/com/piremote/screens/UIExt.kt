@@ -220,7 +220,7 @@ fun PiWidgetPanel(key: String, lines: List<String>) {
             Text("│", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
             Column(modifier = Modifier.weight(1f).padding(vertical = 3.dp, horizontal = 4.dp)) {
                 lines.forEach { line ->
-                    Text(line, color = textSecondary, fontFamily = piMono, fontSize = 11.sp)
+                    Text(buildAnsiText(parseAnsiLine(line), textSecondary), fontFamily = piMono, fontSize = 11.sp)
                 }
             }
         }
@@ -243,7 +243,7 @@ fun PiStatusBarLine(statuses: Map<String, String>) {
             .padding(horizontal = 10.dp, vertical = 2.dp)) {
         Text("├", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
         statuses.forEach { (_, text) ->
-            if (text.isNotBlank()) Text(text, color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+            if (text.isNotBlank()) Text(buildAnsiText(parseAnsiLine(text), textMuted), fontFamily = piMono, fontSize = 10.sp)
         }
         Spacer(Modifier.weight(1f))
     }
