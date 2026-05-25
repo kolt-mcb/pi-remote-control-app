@@ -1,6 +1,5 @@
 package com.piremote
 
-import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -18,7 +17,6 @@ import okhttp3.WebSocketListener
 import java.util.concurrent.TimeUnit
 import com.piremote.theme.CodeUtils
 
-private const val WS_TAG = "PiWs"
 class PiWebSocket : WebSocketListener() {
     private var sock: WebSocket? = null
     private var pendingUrl: String = ""
@@ -156,7 +154,7 @@ class PiWebSocket : WebSocketListener() {
     data class ToolCallSummary(val name: String, val count: Int)
 
     fun connect(url: String) {
-        Log.d(WS_TAG, "Connecting to: $url"); pendingUrl = url
+        pendingUrl = url
         retryCount = 0
         doConnect(url)
     }
@@ -287,14 +285,13 @@ class PiWebSocket : WebSocketListener() {
     fun sendInput(renderId: String, value: String) = sendRenderInput(renderId, value)
 
     override fun onOpen(ws: WebSocket, r: okhttp3.Response) {
-        Log.d(WS_TAG, "OPEN - Connected"); _s.value = ConnectionStatus.Connected
+        _s.value = ConnectionStatus.Connected
         retryCount = 0
         // Request session list and command list on connect
         sock?.send("{\"type\":\"get_sessions\"}")
         sock?.send("{\"type\":\"get_commands\"}")
     }
     override fun onFailure(ws: WebSocket, t: Throwable, r: okhttp3.Response?) {
-        Log.e(WS_TAG, "FAILURE: " + t.message)
         val msg = t.message ?: "Connection failed"
         // Auto-reconnect with increasing backoff (handled via a small delay)
         if (retryCount < 10 && pendingUrl.isNotBlank()) {
@@ -309,11 +306,9 @@ class PiWebSocket : WebSocketListener() {
         }
     }
     override fun onMessage(ws: WebSocket, txt: String) {
-        Log.d(WS_TAG, "MSG IN: " + txt.take(80))
         try { dispatch(txt) } catch (_: Throwable) {}
     }
     override fun onClosed(ws: WebSocket, code: Int, reason: String) {
-        Log.d(WS_TAG, "CLOSED code=$code reason=$reason")
         _s.value = ConnectionStatus.Disconnected
         // Clear busy on every known agent — no global busy flag now.
         agentMap.values.forEach { it.busy.value = false }
