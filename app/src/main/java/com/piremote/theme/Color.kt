@@ -78,11 +78,11 @@ object CodeUtils {
             "private ", "protected ", "public ",
             "abstract ", "override ", "sealed ", "data ",
             "val ", "var ", "companion ", "object ",
-            "asynchronous ", "await ", "typical ", "Expandable ",
+            "await ",
             ".kt:", ".java:", ".ts:", ".js:", ".xml:", "*.py",
             "//", "function ", "const ", "let ", "module",
-            "file://", "src/main", "page ",
-            " ", "#if", "#else", "return"
+            "file://", "src/main",
+            "#if", "#else", "return"
         )
         return patterns.any { content.contains(it) }
     }
