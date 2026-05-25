@@ -11,6 +11,17 @@
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <!--
+      Cleartext is required for ws:// connections to a user's pi on the LAN
+      — the whole product. We can't use network-security-config to scope it
+      to RFC1918 because Android's <domain> matcher doesn't support CIDR
+      ranges, and users always connect via literal IPs (192.168.x.y) which
+      wouldn't match a domain prefix anyway. The mitigation lives at the
+      UX layer: the user explicitly types/scans a URL, so they choose the
+      host. README documents that public ws:// is dangerous and the
+      extension supports an optional shared-secret token (PI_REMOTE_TOKEN)
+      for cases where the host is exposed.
+    -->
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"

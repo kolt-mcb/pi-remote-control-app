@@ -5,6 +5,21 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// versionCode comes from the master-branch commit count. Monotonically
+// increasing as long as we only ship from master; lets the in-app updater
+// compare what's installed vs what's on GitHub. versionName is the short
+// SHA so the user can identify a build at a glance.
+//
+// Outside a git checkout (e.g. some IDE sync edge cases) we fall back to
+// versionCode=1 / versionName="0.1.0".
+val gitVersionCode: Int = providers.exec {
+    commandLine("git", "rev-list", "--count", "HEAD")
+}.standardOutput.asText.map { it.trim().toIntOrNull() ?: 1 }.getOrElse(1)
+
+val gitVersionName: String = providers.exec {
+    commandLine("git", "rev-parse", "--short=8", "HEAD")
+}.standardOutput.asText.map { it.trim().ifBlank { "0.1.0" } }.getOrElse("0.1.0")
+
 android {
     namespace = "com.piremote"
     compileSdk = 35
@@ -13,8 +28,8 @@ android {
         applicationId = "com.piremote"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = gitVersionCode
+        versionName = gitVersionName
     }
 
     buildTypes {
