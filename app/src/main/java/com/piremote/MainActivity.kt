@@ -30,6 +30,7 @@ import com.piremote.screens.InputDialog
 import com.piremote.screens.TerminalRenderView
 import com.piremote.test.TestState
 import com.piremote.theme.PiRemoteTheme
+import com.piremote.theme.ThemeManager
 import kotlinx.coroutines.flow.first
 
 class MainActivity : ComponentActivity() {
@@ -100,6 +101,15 @@ class MainActivity : ComponentActivity() {
                 val renderFrame by ws.renderFrameFlow.collectAsState()
                 // Attached images for the current message
                 val attachedImages by vm.attachedImagesFlow.collectAsState()
+
+                // Mirror the host Pi's active theme into the app palette. The host
+                // broadcasts theme_info on connect and whenever its theme changes;
+                // applying it here recolors the whole UI via ThemeManager.flow.
+                LaunchedEffect(Unit) {
+                    ws.remoteThemeFlow.collect { remote ->
+                        remote?.let { ThemeManager.applyRemote(it) }
+                    }
+                }
 
                 // Load DataStore on startup
                 LaunchedEffect(Unit) {

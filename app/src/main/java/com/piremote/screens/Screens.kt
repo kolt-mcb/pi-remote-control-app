@@ -15,6 +15,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.piremote.*
@@ -916,13 +918,27 @@ fun ChatScreen(
         notifyBanners.forEach { NotifyBanner(it.content, it.type) }
 
         // Chat Messages Area — flat scrollback, no card padding.
-        Box(modifier = Modifier.weight(1f)) {
+        androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.weight(1f)) {
+            // Report our content width in monospace columns so the host re-renders
+            // extension components to fit the phone. piMono advance ≈ 0.6em.
+            val density = androidx.compose.ui.platform.LocalDensity.current
+            val cols = remember(maxWidth) {
+                with(density) {
+                    val charDp = 12.sp.toDp().value * 0.6f
+                    if (charDp > 0f) (maxWidth.value / charDp).toInt().coerceIn(20, 200) else 60
+                }
+            }
+            LaunchedEffect(cols) { vm.reportViewport(cols) }
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 state = ls,
                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
+                // Empty + connected → greet like pi's terminal startup header.
+                if (messages.isEmpty() && assist.isBlank() && status is ConnectionStatus.Connected) {
+                    item(key = "startup") { PiStartupHeader() }
+                }
                 itemsIndexed(messages, key = { idx, msg -> "${idx}_${msg.id}_${msg.timestamp}" }) { _, msg ->
                     PiMessageBubble(msg)
                 }
@@ -1146,6 +1162,11 @@ fun PiTerminalInput(
     }
 
     Column(modifier = Modifier.fillMaxWidth().background(bg).imePadding()) {
+        // ── Slash command autocomplete — pi-tui SelectList look ─────────
+        // Sits above the prompt (keyboard is below), so it stays visible.
+        if (showAutocomplete) {
+            PiSlashAutocomplete(matchedCommands, slashQuery) { name -> vm.setInputText("/$name") }
+        }
         // Row: `>` + TextField
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -1188,63 +1209,86 @@ fun PiTerminalInput(
                 }
             })
         )
+        }
+    }
+}
 
-        // ── Slash command autocomplete chips ─────────────────────────
-        if (showAutocomplete) {
+/**
+ * Slash-command autocomplete, reproduced to match pi's TTY: pi-tui's SelectList.
+ * Vertical list, `→ ` arrow on the best (selected) match drawn in accent, the
+ * name in a left column, a muted description, and `(i/n)` when it overflows —
+ * mirroring SelectList.render + getSelectListTheme (selected→accent, desc→muted).
+ */
+@Composable
+fun PiSlashAutocomplete(commands: List<RemoteCommand>, query: String, onPick: (String) -> Unit) {
+    // pi seeds the selection to the first prefix match (getBestAutocompleteMatchIndex).
+    val bestIdx = commands.indexOfFirst { it.name.lowercase().startsWith(query) }.coerceAtLeast(0)
+    // Primary column width: clamp(widest name + 2-col gap, 12, 32) — pi's layout.
+    val colW = (commands.maxOf { it.name.length } + 2).coerceIn(12, 32)
+    // pi caps visible rows and scrolls via keyboard; on touch we bound the height
+    // and let the whole matched set scroll, so every command stays reachable.
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 200.dp)
+            .verticalScroll(rememberScrollState())
+            .background(bg)
+            .padding(start = 8.dp, end = 6.dp, top = 2.dp, bottom = 2.dp)
+    ) {
+        commands.forEachIndexed { idx, cmd ->
+            val selected = idx == bestIdx
             Row(
+                verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(start = 16.dp, end = 4.dp, bottom = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    .clickable { onPick(cmd.name) }
+                    .padding(vertical = 1.dp)
             ) {
-                matchedCommands.take(12).forEach { cmd ->
-                    Box(
-                        modifier = Modifier
-                            .clickable { vm.setInputText("/${cmd.name}") }
-                            .border(0.5.dp, borderAccent, RoundedCornerShape(0.dp))
-                            .background(bgSecondary)
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
-                    ) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("/", color = accent, fontFamily = piMono, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            Text(cmd.name, color = textPrimary, fontFamily = piMono, fontSize = 10.sp)
-                            if (cmd.description.isNotBlank()) {
-                                Text("— ${cmd.description.take(20)}", color = textMuted, fontFamily = piMono, fontSize = 9.sp)
-                            }
-                        }
-                    }
+                // arrow(2) + name padded to colW; monospace keeps the column aligned.
+                Text(
+                    text = (if (selected) "→ " else "  ") + cmd.name.padEnd(colW),
+                    color = if (selected) accent else textPrimary,
+                    fontFamily = piMono, fontSize = 12.sp, maxLines = 1, softWrap = false
+                )
+                if (cmd.description.isNotBlank()) {
+                    Text(
+                        text = cmd.description,
+                        color = if (selected) accent else textMuted,
+                        fontFamily = piMono, fontSize = 12.sp,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
             }
         }
     }
 }
-}
 
-// ── Legacy boxed input (kept for compat) ──────────────────────────────
-
+/**
+ * pi's startup header, reproduced for the phone so a fresh connection greets
+ * you the way pi's terminal does. pi prints (interactive-mode): an accent logo,
+ * compact keybinding hints, then an onboarding line. We mirror that structure
+ * and the synced theme colors. The keyboard hints collapse to `/` — the only
+ * one with a touch equivalent (^C/^L/^O don't apply here); copy stays pi's.
+ */
 @Composable
-fun PiInputEditor(
-    vm: ChatViewModel, input: String, busy: Boolean, hasMessages: Boolean,
-    commands: List<com.piremote.RemoteCommand>,
-    steerMode: Boolean,
-    setSteerMode: (Boolean) -> Unit,
-    followUpMode: Boolean,
-    setFollowUpMode: (Boolean) -> Unit,
-    attachedImages: List<Uri> = emptyList(),
-    onPickImages: () -> Unit = {},
-    onRemoveImage: (Uri) -> Unit = {}
-) {
-    // Delegate to the new inline terminal prompt
-    PiTerminalInput(
-        vm = vm, input = input, busy = busy,
-        steerMode = steerMode, setSteerMode = setSteerMode,
-        followUpMode = followUpMode, setFollowUpMode = setFollowUpMode,
-        commands = commands
-    )
+fun PiStartupHeader() {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 12.dp)) {
+        Text("pi", color = accent, fontWeight = FontWeight.Bold, fontFamily = piMono, fontSize = 16.sp)
+        Spacer(Modifier.height(8.dp))
+        // Compact hint line — pi draws the key dim, the label muted.
+        Row {
+            Text("/", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
+            Text(" commands", color = textSecondary, fontFamily = piMono, fontSize = 12.sp)
+        }
+        Spacer(Modifier.height(8.dp))
+        // Onboarding line — verbatim from pi.
+        Text(
+            "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.",
+            color = textMuted, fontFamily = piMono, fontSize = 12.sp, lineHeight = 17.sp
+        )
+    }
 }
-
-// Old boxed input removed. Replaced by PiTerminalInput.
 
 /** Image preview chip — small thumbnail with × to remove */
 @Composable
@@ -1333,6 +1377,49 @@ fun PiMessageBubble(msg: ChatMessage) {
         MessageToolType.ToolResult -> PiToolMessage(msg)
         MessageToolType.Streaming -> if (msg.content.isNotBlank()) PiAssistantMessage(msg) else Unit
         MessageToolType.Thinking -> PiThinkingMessage(msg)
+        MessageToolType.Custom -> PiCustomMessage(msg)
+    }
+}
+
+/** Render host-supplied ANSI lines (an extension's own Component, rendered at our
+ *  width) verbatim — full color/background fidelity, reflowed to the phone.
+ *  Reuses [parseAnsiLine]/[buildAnsiText] from TerminalView. */
+@Composable
+fun AnsiBlock(lines: List<String>, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        lines.forEach { line ->
+            val segments = parseAnsiLine(line)
+            if (segments.all { it.first.isEmpty() }) {
+                Spacer(Modifier.height(6.dp))
+            } else {
+                Text(
+                    buildAnsiText(segments),
+                    fontFamily = piMono,
+                    fontSize = 12.sp,
+                    softWrap = false,
+                )
+            }
+        }
+    }
+}
+
+/** A custom-message entry whose presentation was rendered by its own extension. */
+@Composable
+fun PiCustomMessage(msg: ChatMessage) {
+    val lines = msg.ansiLines ?: return
+    AnsiBlock(lines, Modifier.fillMaxWidth().padding(start = 8.dp, top = 2.dp, end = 4.dp, bottom = 2.dp))
+}
+
+/** A tool result rendered by the tool's own renderResult (e.g. pi-subagents cards). */
+@Composable
+fun PiRenderedTool(msg: ChatMessage) {
+    val lines = msg.ansiLines ?: return
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp, horizontal = 4.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("●", color = if (msg.isError) error else toolBorder, fontFamily = piMono, fontSize = 13.sp)
+            Text(msg.toolName.ifBlank { "Tool" }, color = textPrimary, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+        AnsiBlock(lines, Modifier.padding(start = 8.dp, top = 2.dp))
     }
 }
 
@@ -1410,6 +1497,8 @@ fun PiThinkingMessage(msg: ChatMessage) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun PiToolMessage(msg: ChatMessage) {
+    // If the host rendered the tool's own result Component, show that verbatim.
+    if (msg.ansiLines != null) { PiRenderedTool(msg); return }
     val clipboard = LocalContext.current.getSystemService(ClipboardManager::class.java)
     var copied by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }

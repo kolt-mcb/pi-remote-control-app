@@ -2,75 +2,85 @@ package com.piremote.theme
 
 import androidx.compose.ui.graphics.Color
 
-// ── Pi Terminal Theme Colors ──────────────────────────────────────────
-// Dark theme (default) — matches pi dark.json
+/**
+ * Backward-compat shims.
+ * Every value reads from ThemeManager.current so UI code still compiles
+ * against the old top-level vals while the reactive system drives the real data.
+ *
+ * New code should prefer `val theme by ws.themeFlow.collectAsState()`
+ * and use `theme.bg`, `theme.accent`, etc. directly.
+ */
 
-val bg          = Color(0xFF0D1117)       // Terminal background
-val bgSecondary = Color(0xFF161B22)       // Panel backgrounds
-val bgTertiary  = Color(0xFF21262D)       // Input/deep backgrounds
+// ▸ Backgrounds
+val bg: Color get() = ThemeManager.current.bg
+val bgSecondary: Color get() = ThemeManager.current.bgSecondary
+val bgTertiary: Color get() = ThemeManager.current.bgTertiary
 
-val border       = Color(0xFF30363D)      // Normal borders (├─┤─┴)
-val borderAccent = Color(0xFF58A6FF)      // Highlighted borders (selected panels)
-val borderMuted  = Color(0xFF21262D)      // Subtle borders (editor border idle)
+// ▸ Borders
+val border: Color get() = ThemeManager.current.border
+val borderAccent: Color get() = ThemeManager.current.borderAccent
+val borderMuted: Color get() = ThemeManager.current.borderMuted
 
-val textPrimary  = Color(0xFFF0F6FC)      // Default text
-val textSecondary = Color(0xFF8B949E)     // Muted text
-val textMuted    = Color(0xFF636C76)      // Dim text
+// ▸ Text
+val textPrimary: Color get() = ThemeManager.current.textPrimary
+val textSecondary: Color get() = ThemeManager.current.textSecondary
+val textMuted: Color get() = ThemeManager.current.textMuted
 
-// Core accents
-val accent        = Color(0xFF58A6FF)     // Primary accent (blue)
-val success       = Color(0xFF3FB950)     // Success / idle
-val error         = Color(0xFFF85149)     // Error
-val errorColor    = error                  // Alias for backwards compat
-val warning       = Color(0xFFD29922)     // Warning / amber
+// ▸ Accents
+val accent: Color get() = ThemeManager.current.accent
+val success: Color get() = ThemeManager.current.success
+val error: Color get() = ThemeManager.current.error
+val warning: Color get() = ThemeManager.current.warning
 
-// Message styling
-val userBubbleBg  = Color(0xFF1C2333)     // User message subtle bg
-val userBubbleText = textPrimary
-val assistantText = Color(0xFFE6EDF3)
+// ▸ Messages / selection
+val userBubbleBg: Color get() = ThemeManager.current.userBubbleBg
+val userBubbleText: Color get() = ThemeManager.current.userBubbleText
+val assistantText: Color get() = ThemeManager.current.assistantText
+val selectedBg: Color get() = ThemeManager.current.selectedBg
 
-// Tool boxes
-val toolBorder    = Color(0xFF3FB950)     // Tool success border
-val toolPending   = Color(0xFF2D333B)     // Tool pending bg
-val toolErrorBg   = Color(0xFF2D1B1B)     // Tool error bg
-val toolSuccessBg = Color(0xFF1B2D1B)     // Tool success bg
-val toolTitle     = accent                // Tool title text
+// ▸ Tool boxes
+val toolBorder: Color get() = ThemeManager.current.toolBorder
+val toolPending: Color get() = ThemeManager.current.toolPending
+val toolErrorBg: Color get() = ThemeManager.current.toolErrorBg
+val toolSuccessBg: Color get() = ThemeManager.current.toolSuccessBg
+val toolTitle: Color get() = ThemeManager.current.toolTitle
 
-// Thinking colors (match thinking level borders)
-val thinkingColor      = Color(0xFFD2A8FF)  // Thinking text / border
-val thinkingBorder     = Color(0xFFD2A8FF)  // Thinking level border (low)
-val thinkingLow        = Color(0xFF58A6FF)  // Low thinking border (blue)
-val thinkingMedium     = Color(0xFFD2A8FF)  // Medium thinking border (purple)
-val thinkingHigh       = Color(0xFFFF7B72)  // High thinking border (red-orange)
+// ▸ Thinking
+val thinkingColor: Color get() = ThemeManager.current.thinkingColor
+val thinkingBorder: Color get() = ThemeManager.current.thinkingBorder
+val thinkingLow: Color get() = ThemeManager.current.thinkingLow
+val thinkingMedium: Color get() = ThemeManager.current.thinkingMedium
+val thinkingHigh: Color get() = ThemeManager.current.thinkingHigh
 
-// Syntax highlighting
-val codeKeyword   = Color(0xFFFF7B72)     // Keywords
-val codeString    = Color(0xFFA5D6FF)     // Strings
-val codeComment   = Color(0xFF6E7681)     // Comments
-val codeFunction  = Color(0xFFD2A8FF)     // Functions
-val codeNumber    = Color(0xFF79C0FF)     // Numbers
-val codeType      = Color(0xFF7EE787)     // Types
-val codeOperator  = Color(0xFF79C0FF)     // Operators
-val codePunctuation = textMuted           // Punctuation
+// ▸ Syntax
+val codeKeyword: Color get() = ThemeManager.current.codeKeyword
+val codeString: Color get() = ThemeManager.current.codeString
+val codeComment: Color get() = ThemeManager.current.codeComment
+val codeFunction: Color get() = ThemeManager.current.codeFunction
+val codeNumber: Color get() = ThemeManager.current.codeNumber
+val codeType: Color get() = ThemeManager.current.codeType
+val codeOperator: Color get() = ThemeManager.current.codeOperator
+val codePunctuation: Color get() = ThemeManager.current.codePunctuation
 
-// Footer bar
-val footerBg     = Color(0xFF010409)      // Footer background (near black)
-val footerText   = textMuted              // Footer text color
+// ▸ Markdown
+val mdHeading: Color get() = ThemeManager.current.mdHeading
+val mdLink: Color get() = ThemeManager.current.mdLink
+val mdLinkUrl: Color get() = ThemeManager.current.mdLinkUrl
+val mdCode: Color get() = ThemeManager.current.mdCode
+val mdCodeBlock: Color get() = ThemeManager.current.mdCodeBlock
+val mdCodeBlockBorder: Color get() = ThemeManager.current.mdCodeBlockBorder
+val mdQuote: Color get() = ThemeManager.current.mdQuote
+val mdQuoteBorder: Color get() = ThemeManager.current.mdQuoteBorder
+val mdListBullet: Color get() = ThemeManager.current.mdListBullet
 
-// Markdown — values mirror pi's dark.json (mdHeading/mdCode/mdQuote/etc.)
-val mdHeading        = Color(0xFFF0C674)  // warm gold for # ## ### lines
-val mdLink           = Color(0xFF81A2BE)  // blue-ish link text
-val mdLinkUrl        = Color(0xFF6E7681)  // dim gray for the (url) part
-val mdCode           = accent             // inline `code` — accent blue
-val mdCodeBlock      = Color(0xFF7EE787)  // fenced code block body — green
-val mdCodeBlockBorder = Color(0xFF6E7681) // fenced code block left rule — gray
-val mdQuote          = Color(0xFF8B949E)  // blockquote text — gray
-val mdQuoteBorder    = Color(0xFF6E7681)  // blockquote left rule — gray
-val mdListBullet     = accent             // - / * / 1. bullets — accent blue
+// ▸ Footer
+val footerBg: Color get() = ThemeManager.current.footerBg
+val footerText: Color get() = ThemeManager.current.footerText
 
-// Md-like selections
-val selectedBg   = Color(0xFF264F78)      // Selected line bg (menu items)
+// ▸ Legacy alias (used by a few places)
+val errorColor: Color get() = error
 
+// ▸ Code detection helpers (unchanged from original)
 object CodeUtils {
     fun isCodeContent(content: String): Boolean {
         val patterns = setOf(
@@ -86,6 +96,5 @@ object CodeUtils {
         )
         return patterns.any { content.contains(it) }
     }
-
     fun countLines(content: String): Int = content.split("\n").size
 }

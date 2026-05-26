@@ -38,7 +38,7 @@ sealed class ConnectionStatus {
 
 /** Which sub-screen to show while connected */
 enum class ConnectedScreen { Chat, Sessions }
-enum class MessageToolType { User, Assistant, ToolResult, Streaming, Thinking }
+enum class MessageToolType { User, Assistant, ToolResult, Streaming, Thinking, Custom }
 object MsgId {
     private val counter = AtomicInteger(0)
     private val epoch = System.currentTimeMillis()
@@ -53,6 +53,10 @@ data class ChatMessage(
     val toolArgs: String = "",
     val content: String = "",
     val isError: Boolean = false,
+    // Host-rendered ANSI lines for an extension's own Component (custom messages
+    // and tool results), rendered at the phone's width. When set, the UI shows
+    // these verbatim instead of [content], mirroring the extension's presentation.
+    val ansiLines: List<String>? = null,
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -307,6 +311,10 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         _ws.sendSlashCommand(command, args, _selectedSession.value)
     }
     /** Spawn a new pi peer process on the host. Routes to PiWebSocket.sendSpawnPeer. */
+    /** Report the chat area's width (monospace columns) so the host renders
+     *  extension components to fit the phone. */
+    fun reportViewport(cols: Int) { _ws.reportViewport(cols) }
+
     fun spawnPeer() { _ws.sendSpawnPeer() }
 
     /** Spawn a peer resuming a specific saved session — equivalent to

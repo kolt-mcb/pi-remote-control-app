@@ -39,6 +39,9 @@ class PiWebSocket : WebSocketListener() {
         // events that arrive before session_list still get a working state.
         var name: String = ""
         var isSelf: Boolean = false
+        // Last-seen pi session id. When it changes, the host replaced the
+        // session (/new, /resume) and we clear this agent's stale chat.
+        var sessionId: String = ""
 
         val messages = MutableStateFlow<List<ChatMessage>>(emptyList())
         val assistingText = MutableStateFlow("")
@@ -134,6 +137,12 @@ class PiWebSocket : WebSocketListener() {
     // event, not retained state — the ViewModel drops it into the input field.
     private val _editorText = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val editorTextFlow: SharedFlow<String> get() = _editorText
+    // ── Theme ▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸
+    // Themed palette from the extension (Pi-studio-style). Populated once
+    // the host Pi broadcasts theme_info on connect. The Android app mirrors
+    // the theme so the phone UI matches the Pi terminal it talks to.
+    private val _remoteTheme = MutableStateFlow<com.piremote.theme.PiRemoteTheme?>(null)
+    val remoteThemeFlow: StateFlow<com.piremote.theme.PiRemoteTheme?> get() = _remoteTheme
 
     private val _s = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     val statusFlow: StateFlow<ConnectionStatus> get() = _s
@@ -232,6 +241,23 @@ class PiWebSocket : WebSocketListener() {
     fun sendGetSavedSessions() {
         sock?.send("{\"type\":\"get_saved_sessions\"}")
     }
+
+    // Report the phone's content width (in monospace columns) so the host
+    // re-renders extension components to fit the device. The width is often known
+    // before the socket opens, so we remember it and flush on connect; the send
+    // is deduped to one per value and reset on disconnect (see onOpen/onClosed).
+    private var lastReportedCols = -1
+    private var desiredCols = -1
+    fun reportViewport(cols: Int) {
+        if (cols <= 0) return
+        desiredCols = cols
+        flushViewport()
+    }
+    private fun flushViewport() {
+        val c = desiredCols
+        if (c <= 0 || c == lastReportedCols) return
+        if (sock?.send("{\"type\":\"viewport\",\"cols\":$c}") == true) lastReportedCols = c
+    }
     // UI protocol: send response for extension_ui_request dialogs
     fun sendUIResponse(id: String, value: String? = null, confirmed: Boolean? = null, cancelled: Boolean = false) {
         val escId = Js.e(id)
@@ -293,6 +319,9 @@ class PiWebSocket : WebSocketListener() {
         // Request session list and command list on connect
         sock?.send("{\"type\":\"get_sessions\"}")
         sock?.send("{\"type\":\"get_commands\"}")
+        // Flush the device width now that the socket is open (it's usually known
+        // before connect, so the initial reportViewport call couldn't send it).
+        flushViewport()
     }
     override fun onFailure(ws: WebSocket, t: Throwable, r: okhttp3.Response?) {
         val msg = t.message ?: "Connection failed"
@@ -314,8 +343,23 @@ class PiWebSocket : WebSocketListener() {
     }
     override fun onClosed(ws: WebSocket, code: Int, reason: String) {
         _s.value = ConnectionStatus.Disconnected
+        // Re-report the viewport on the next connect (new host needs our width).
+        lastReportedCols = -1
         // Clear busy on every known agent — no global busy flag now.
         agentMap.values.forEach { it.busy.value = false }
+        // A server-initiated close lands here (not onFailure). The host closes
+        // client sockets when the session is replaced (/new, /resume) and then
+        // rebinds a fresh server, so reconnect to land on the new session.
+        // disconnect() clears pendingUrl, so a user-initiated close won't reconnect.
+        // A clean close is NOT a failure: reset retryCount so repeated /new never
+        // counts toward the give-up limit (that's what left the app stuck before).
+        if (pendingUrl.isNotBlank()) {
+            retryCount = 0
+            scope.launch {
+                delay(600)
+                reconnect()
+            }
+        }
     }
 
     private fun dispatch(raw: String) {
@@ -385,11 +429,6 @@ class PiWebSocket : WebSocketListener() {
             val count = (j["clients"] as? Number)?.toInt() ?: 0
             _clientCount.value = count
         }
-        // TUI input delivery confirmation (from DOOM/remote-control)
-        // Ack is enough; tui_input broadcast just means the key was relayed
-        if (tp == "tui_input") {
-            // Key input was delivered to DOOM — no action needed on Android side
-        }
         // Generic TUI render frames (any Pi extension component)
         if (tp == "render") {
             val id = Js.gets(j, "id") ?: ""
@@ -411,6 +450,99 @@ class PiWebSocket : WebSocketListener() {
                 )
             }
         }
+        // Remote theme (pi-studio-style: extension broadcasts the active Pi theme
+        // palette so the phone UI mirrors the Pi terminal it's talking to.
+        if (tp == "theme_info") {
+            val theme = parseRemoteTheme(JP.nj(j, "theme"))
+            theme?.let { _remoteTheme.value = it }
+            return
+        }
+    }
+
+    /** Parse a Pi theme JSON blob (from the extension) into PiRemoteTheme.
+     *  Handles {colors:{...}} and {vars:{...},colors:{...}} forms. */
+    private fun parseRemoteTheme(t: Map<*, *>?): com.piremote.theme.PiRemoteTheme? {
+        if (t == null) return null
+        val colors = t["colors"] as? Map<*, *> ?: return null
+        val vars: Map<*, *> = t["vars"] as? Map<*, *> ?: emptyMap<Any?, Any?>()
+        fun hexToColor(s: String): androidx.compose.ui.graphics.Color? {
+            return try {
+                if (!s.startsWith('#') || s.length != 7) return null
+                val h = s.substring(1)
+                val r = h.substring(0, 2).toInt(16) shl 16
+                val g = h.substring(2, 4).toInt(16) shl 8
+                val b = h.substring(4, 6).toInt(16)
+                androidx.compose.ui.graphics.Color(r or g or b or -0x1000000)
+            } catch (_: Exception) { null }
+        }
+        fun resolveRaw(v: Any?): androidx.compose.ui.graphics.Color? = when {
+            v is String -> hexToColor(v) ?: vars[v]?.let { resolveRaw(it) }
+            v is Number -> androidx.compose.ui.graphics.Color(v.toInt())
+            else -> null
+        }
+        fun resolve(key: String): androidx.compose.ui.graphics.Color? = resolveRaw(colors[key])
+        // Prefer the host's explicit isLight flag (luminance-derived). Fall back
+        // to a word-boundary name check so "Twilight"/"Delight" aren't misread.
+        val isLight = (t["isLight"] as? Boolean)
+            ?: (Js.gets(t, "name")?.let {
+                Regex("\\blight\\b", RegexOption.IGNORE_CASE).containsMatchIn(it)
+            } == true)
+        val cs = if (isLight) com.piremote.theme.ColorScheme.LIGHT
+                 else com.piremote.theme.ColorScheme.DARK
+        // Base palette supplies the surfaces a Pi theme doesn't carry (its page
+        // background lives outside the theme's color roles); synced colors below
+        // overlay it. Picking the matching light/dark base keeps text readable.
+        val dflt = if (isLight) com.piremote.theme.PiRemoteTheme.defaultLight
+                   else com.piremote.theme.PiRemoteTheme.defaultDark
+        return com.piremote.theme.PiRemoteTheme(
+            colorScheme = cs,
+            bg = resolve("bg") ?: resolve("background") ?: dflt.bg,
+            bgSecondary = resolve("surface") ?: dflt.bgSecondary,
+            bgTertiary = resolve("surfaceVar") ?: dflt.bgTertiary,
+            footerBg = resolve("footerBg") ?: dflt.footerBg,
+            border = resolve("border") ?: dflt.border,
+            borderAccent = resolve("borderAccent") ?: dflt.borderAccent,
+            borderMuted = resolve("borderMuted") ?: dflt.borderMuted,
+            textPrimary = resolve("text") ?: dflt.textPrimary,
+            textSecondary = resolve("muted") ?: dflt.textSecondary,
+            textMuted = resolve("dim") ?: dflt.textMuted,
+            accent = resolve("accent") ?: dflt.accent,
+            success = resolve("success") ?: dflt.success,
+            error = resolve("error") ?: dflt.error,
+            warning = resolve("warning") ?: dflt.warning,
+            userBubbleBg = resolve("userMessageBg") ?: dflt.userBubbleBg,
+            userBubbleText = resolve("userMessageText") ?: dflt.userBubbleText,
+            assistantText = resolve("text") ?: dflt.assistantText,
+            selectedBg = resolve("selectedBg") ?: dflt.selectedBg,
+            toolBorder = resolve("success") ?: dflt.toolBorder,
+            toolPending = resolve("toolPendingBg") ?: dflt.toolPending,
+            toolErrorBg = resolve("toolErrorBg") ?: dflt.toolErrorBg,
+            toolSuccessBg = resolve("toolSuccessBg") ?: dflt.toolSuccessBg,
+            toolTitle = resolve("text") ?: dflt.toolTitle,
+            thinkingColor = resolve("thinkingText") ?: dflt.thinkingColor,
+            thinkingBorder = resolve("thinkingMedium") ?: dflt.thinkingBorder,
+            thinkingLow = resolve("thinkingLow") ?: dflt.thinkingLow,
+            thinkingMedium = resolve("thinkingMedium") ?: dflt.thinkingMedium,
+            thinkingHigh = resolve("thinkingHigh") ?: dflt.thinkingHigh,
+            codeKeyword = resolve("syntaxKeyword") ?: dflt.codeKeyword,
+            codeString = resolve("syntaxString") ?: dflt.codeString,
+            codeComment = resolve("syntaxComment") ?: dflt.codeComment,
+            codeFunction = resolve("syntaxFunction") ?: dflt.codeFunction,
+            codeNumber = resolve("syntaxNumber") ?: dflt.codeNumber,
+            codeType = resolve("syntaxType") ?: dflt.codeType,
+            codeOperator = resolve("syntaxOperator") ?: dflt.codeOperator,
+            codePunctuation = resolve("syntaxPunctuation") ?: dflt.codePunctuation,
+            mdHeading = resolve("mdHeading") ?: dflt.mdHeading,
+            mdLink = resolve("mdLink") ?: dflt.mdLink,
+            mdLinkUrl = resolve("mdLinkUrl") ?: dflt.mdLinkUrl,
+            mdCode = resolve("mdCode") ?: dflt.mdCode,
+            mdCodeBlock = resolve("mdCodeBlock") ?: dflt.mdCodeBlock,
+            mdCodeBlockBorder = resolve("mdCodeBlockBorder") ?: dflt.mdCodeBlockBorder,
+            mdQuote = resolve("mdQuote") ?: dflt.mdQuote,
+            mdQuoteBorder = resolve("mdQuoteBorder") ?: dflt.mdQuoteBorder,
+            mdListBullet = resolve("mdListBullet") ?: dflt.mdListBullet,
+            footerText = resolve("dim") ?: dflt.footerText,
+        )
     }
 
     private fun msgStart(state: AgentState, j: Map<*, *>) {
@@ -462,6 +594,19 @@ class PiWebSocket : WebSocketListener() {
     private fun msgEnd(state: AgentState, j: Map<*, *>) {
         val role = Js.gets(j, "role")
         if (role == "assistant") es(state, null)
+        // Custom-message entries carry host-rendered ANSI lines (the extension's
+        // own Component, rendered at our width). Show them inline verbatim.
+        val rawLines = j["ansiLines"]
+        if (rawLines is List<*>) {
+            val lines = rawLines.filterIsInstance<String>()
+            if (lines.isNotEmpty()) {
+                state.messages.value = state.messages.value + ChatMessage(
+                    type = MessageToolType.Custom,
+                    content = Js.gets(j, "customType") ?: "",
+                    ansiLines = lines,
+                )
+            }
+        }
     }
 
     private fun msgUpd(state: AgentState, j: Map<*, *>) {
@@ -527,6 +672,9 @@ class PiWebSocket : WebSocketListener() {
         val isError = (j["isError"] as? Boolean) ?: false
         val bufferedContent = state.tbufs[id]?.toString().orEmpty()
         val content = if (remoteContent.isNotBlank()) remoteContent else bufferedContent
+        // Host-rendered ANSI lines for the tool's own result renderer (e.g.
+        // pi-subagents cards), rendered at our width. Shown verbatim when present.
+        val ansiLines = (j["ansiLines"] as? List<*>)?.filterIsInstance<String>()?.takeIf { it.isNotEmpty() }
 
         val ml = state.messages.value.toMutableList()
         val idx = ml.indexOfLast { it.toolCallId == id && it.type == MessageToolType.Streaming }
@@ -537,13 +685,15 @@ class PiWebSocket : WebSocketListener() {
                 toolName = nm, toolArgs = ml[idx].toolArgs,
                 content = content,
                 isError = isError,
+                ansiLines = ansiLines,
                 timestamp = ml[idx].timestamp
             )
             state.messages.value = ml
         } else {
             state.messages.value = ml + ChatMessage(
                 toolCallId = id, type = MessageToolType.ToolResult,
-                toolName = nm, content = content, isError = isError
+                toolName = nm, content = content, isError = isError,
+                ansiLines = ansiLines
             )
         }
         state.tbufs.remove(id)
@@ -619,7 +769,8 @@ class PiWebSocket : WebSocketListener() {
                 connectedAt = ((s["connectedAt"] as? Number) ?: 0).toLong(),
                 lastActivity = ((s["lastActivity"] as? Number) ?: 0).toLong(),
                 messageCount = ((s["messageCount"] as? Number) ?: 0).toInt(),
-                turnIndex = ((s["turnIndex"] as? Number) ?: 0).toInt()
+                turnIndex = ((s["turnIndex"] as? Number) ?: 0).toInt(),
+                sessionId = (s["sessionId"] as? String) ?: ""
             )
         }
         _sessions.value = list
@@ -631,6 +782,20 @@ class PiWebSocket : WebSocketListener() {
             val a = ensureAgent(s.id)
             a.name = s.name
             a.isSelf = s.isSelf
+            // Host replaced the session (/new, /resume): the session id changed
+            // from a known prior value → drop this agent's stale chat so the
+            // fresh session shows empty. Skip on first sight (blank prior id) so
+            // a normal reconnect (and DB-restored history) isn't wiped.
+            if (s.sessionId.isNotBlank() && a.sessionId.isNotBlank() && a.sessionId != s.sessionId) {
+                a.messages.value = emptyList()
+                a.assistingText.value = ""
+                a.thinking.value = ""
+                a.turnSummary.value = null
+                a.stxt = ""
+                a.tbufs.clear()
+                a.turnToolCalls.clear()
+            }
+            if (s.sessionId.isNotBlank()) a.sessionId = s.sessionId
         }
         // If the placeholder agent (from saved-DB restore) is still around,
         // promote it onto the real self agent now that we know its id.
@@ -645,11 +810,22 @@ class PiWebSocket : WebSocketListener() {
             _agents.value = agentMap.values.toList()
             if (_selectedAgentId.value == REPO_PLACEHOLDER_ID) _selectedAgentId.value = self.id
         }
-        // Prefer the self agent as the default selection if nothing is selected
-        // (or the selection points at a vanished agent).
+        // Prune agents no longer in the session list — e.g. previous host
+        // processes (each pi restart mints a new self id) or closed peers.
+        // Without this, dead tabs linger and the selection can get stuck on a
+        // vanished agent, so messages silently go nowhere.
+        val liveIds = list.map { it.id }.toSet()
+        val stale = agentMap.keys.filter { it != REPO_PLACEHOLDER_ID && it !in liveIds }
+        if (stale.isNotEmpty()) {
+            stale.forEach { agentMap.remove(it) }
+            _agents.value = agentMap.values.toList()
+        }
+        // Keep the current selection only if it points at a live session;
+        // otherwise fall back to the self agent (so sends reach the live host).
         val curr = _selectedAgentId.value
-        val stillPresent = curr != null && agentMap.containsKey(curr)
-        if (!stillPresent) _selectedAgentId.value = self?.id ?: list.firstOrNull()?.id
+        if (curr == null || curr !in liveIds) {
+            _selectedAgentId.value = self?.id ?: list.firstOrNull()?.id
+        }
     }
 
     private fun handleSavedSessions(j: Map<*, *>) {
@@ -865,7 +1041,8 @@ data class RemoteSession(
     val connectedAt: Long,
     val lastActivity: Long,
     val messageCount: Int,
-    val turnIndex: Int
+    val turnIndex: Int,
+    val sessionId: String = ""  // pi session file id; changes on /new, /resume
 ) {
     val isActive: Boolean = status == "busy"
     val isSelf: Boolean = kind == "self"
