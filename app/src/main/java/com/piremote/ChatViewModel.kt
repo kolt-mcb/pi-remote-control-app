@@ -319,11 +319,11 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         }
         _ws.sendSlashCommand(command, args, _selectedSession.value)
     }
-    /** Spawn a new pi peer process on the host. Routes to PiWebSocket.sendSpawnPeer. */
     /** Report the chat area's width (monospace columns) so the host renders
      *  extension components to fit the phone. */
     fun reportViewport(cols: Int) { _ws.reportViewport(cols) }
 
+    /** Spawn a new pi peer process on the host. Routes to PiWebSocket.sendSpawnPeer. */
     fun spawnPeer() { _ws.sendSpawnPeer() }
 
     /** Spawn a peer resuming a specific saved session — equivalent to
