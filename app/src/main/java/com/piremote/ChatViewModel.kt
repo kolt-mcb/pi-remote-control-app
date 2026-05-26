@@ -209,6 +209,15 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 }
             }
         }
+        // When the host replaces the session (/new, /resume), the in-memory chat
+        // is already cleared in PiWebSocket; also wipe the persisted DB history
+        // for this server so a later reconnect's repoMessages can't repaint the
+        // old conversation over the now-empty session.
+        scope.launch {
+            _ws.sessionResetFlow.collect {
+                try { _dao.deleteByServerUrl(u) } catch (_: Throwable) {}
+            }
+        }
         // Auto-select the host (self) session whenever the session list updates and
         // nothing is currently selected (or the selection vanished).
         scope.launch {
