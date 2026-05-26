@@ -107,6 +107,11 @@ class PiWebSocket : WebSocketListener() {
     val commandListFlow: StateFlow<List<RemoteCommand>> get() = _commands
     private val _savedSessions = MutableStateFlow<List<SavedSession>>(emptyList())
     val savedSessionsFlow: StateFlow<List<SavedSession>> get() = _savedSessions
+    // Fires when the host replaces the self session (/new, /resume). The
+    // ViewModel wipes the persisted DB history so a later reconnect can't
+    // re-inject the old conversation over the now-empty session.
+    private val _sessionReset = MutableSharedFlow<Unit>(extraBufferCapacity = 8)
+    val sessionResetFlow: SharedFlow<Unit> get() = _sessionReset
     // Extension UI: pending dialog requests awaiting response
     private val _uiRequests = MutableStateFlow<List<ExtensionUIRequest>>(emptyList())
     val uiRequestFlow: StateFlow<List<ExtensionUIRequest>> get() = _uiRequests
@@ -782,6 +787,11 @@ class PiWebSocket : WebSocketListener() {
             val a = ensureAgent(s.id)
             a.name = s.name
             a.isSelf = s.isSelf
+            // Sync busy from the server's session_list so reconnects don't
+            // leave the app thinking idle when the agent is actually running.
+            // Without this, the textfield enables and a regular prompt hits
+            // "Agent is already processing" because deliverAs is undefined.
+            a.busy.value = s.isActive
             // Host replaced the session (/new, /resume): the session id changed
             // from a known prior value → drop this agent's stale chat so the
             // fresh session shows empty. Skip on first sight (blank prior id) so
@@ -794,6 +804,9 @@ class PiWebSocket : WebSocketListener() {
                 a.stxt = ""
                 a.tbufs.clear()
                 a.turnToolCalls.clear()
+                // Self session replaced → also wipe persisted DB history so a
+                // later reconnect's repoMessages doesn't repaint the old chat.
+                if (s.isSelf) _sessionReset.tryEmit(Unit)
             }
             if (s.sessionId.isNotBlank()) a.sessionId = s.sessionId
         }

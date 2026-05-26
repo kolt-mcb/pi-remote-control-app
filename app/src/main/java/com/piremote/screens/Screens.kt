@@ -969,7 +969,8 @@ fun ChatScreen(
         }
 
         // Animated working status line — Claude Code "✻ Pondering…" feel.
-        if (busy) {
+        // Hide when in steer mode so the PiPromptRow below becomes usable
+        if (busy && !steerMode) {
             PiWorkingStatus(
                 busyStartedAt = busyStartedAt,
                 onInterrupt = { steerMode = true }
@@ -1193,7 +1194,7 @@ fun PiTerminalInput(
             ),
             textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 13.sp),
             keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Send),
-            enabled = !busy,
+            enabled = !busy || steerMode || followUpMode,
             keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
                 when {
                     steerMode -> { vm.sendSteer(); setSteerMode(false) }
