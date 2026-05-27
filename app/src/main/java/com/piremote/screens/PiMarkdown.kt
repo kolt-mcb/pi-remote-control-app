@@ -24,10 +24,10 @@ import dev.snipme.highlights.model.SyntaxLanguage
 import dev.snipme.highlights.model.SyntaxTheme
 
 // Pre-compiled regex for markdown parsing — avoids per-call allocation in hot paths
-private val boldStarRe = boldStarRe
-private val boldUndersRe = boldUndersRe
-private val italicStarRe = italicStarRe
-private val italicUndersRe = italicUndersRe
+private val boldStarRe = Regex("""\*\*([^*\n]+?)\*\*""")
+private val boldUndersRe = Regex("""__([^_\n]+?)__""")
+private val italicStarRe = Regex("""(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)""")
+private val italicUndersRe = Regex("""(?<!_)_(?!_)([^_\n]+?)_(?!_)""")
 private val inlineCodeRe = Regex("""`([^`\n]+?)`""")
 private val linkRe = Regex("""\[([^]\n]+?)\]\(([^)\n]+?)\)""")
 

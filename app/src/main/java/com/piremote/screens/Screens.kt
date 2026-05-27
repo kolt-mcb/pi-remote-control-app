@@ -211,7 +211,7 @@ fun ConnectScreen(
                                     ),
                                     textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 12.sp),
                                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Go),
-                                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = connect)
+                                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = { connect() })
                                 )
                                 
                                 // Recent connections
