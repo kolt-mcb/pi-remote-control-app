@@ -121,11 +121,9 @@ class PiWebSocket : WebSocketListener() {
     // Extension UI: widgets (above/below editor)
     private val _widgets = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     val widgetsFlow: StateFlow<Map<String, List<String>>> get() = _widgets
-    // Compaction / retry status
+    // Compaction status
     private val _compacting = MutableStateFlow(false)
     val compactingFlow: StateFlow<Boolean> get() = _compacting
-    private val _retryStatus = MutableStateFlow<String?>(null)
-    val retryStatusFlow: StateFlow<String?> get() = _retryStatus
     // Notify banners (extension_ui notify)
     private val _notifyBanners = MutableStateFlow<List<BannerMessage>>(emptyList())
     val notifyBannerFlow: StateFlow<List<BannerMessage>> get() = _notifyBanners
@@ -138,10 +136,6 @@ class PiWebSocket : WebSocketListener() {
     // Generic TUI render frames (any Pi extension component)
     private val _renderFrame = MutableStateFlow<RenderFrame?>(null)
     val renderFrameFlow: StateFlow<RenderFrame?> get() = _renderFrame
-    // Editor text an extension asked to prefill (ctx.ui.setEditorText). One-shot
-    // event, not retained state — the ViewModel drops it into the input field.
-    private val _editorText = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val editorTextFlow: SharedFlow<String> get() = _editorText
     // ── Theme ▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸
     // Themed palette from the extension (Pi-studio-style). Populated once
     // the host Pi broadcasts theme_info on connect. The Android app mirrors
@@ -207,8 +201,8 @@ class PiWebSocket : WebSocketListener() {
         sock?.close(1000, null)
     }
 
-    fun sendPrompt(txt: String, targetAgentId: String = "", images: List<String> = emptyList()) {
-        send("prompt", txt, targetAgentId, images)
+    fun sendPrompt(txt: String, targetAgentId: String = "") {
+        send("prompt", txt, targetAgentId)
     }
     fun sendSteer(txt: String, targetAgentId: String = "") {
         send("steer", txt, targetAgentId)
@@ -294,21 +288,9 @@ class PiWebSocket : WebSocketListener() {
         // once its id is known.
         const val REPO_PLACEHOLDER_ID = "__repo_placeholder__"
     }
-    private fun send(type: String, txt: String, targetAgentId: String = "", images: List<String> = emptyList()) {
+    private fun send(type: String, txt: String, targetAgentId: String = "") {
         val target = if (targetAgentId.isNotBlank()) ",\"targetAgentId\":\"${Js.e(targetAgentId)}\"" else ""
-        val imgs = if (images.isNotEmpty()) {
-            val imgParts = images.map { img -> "\"${Js.e(img)}\"" }
-            ",\"images\":[${imgParts.joinToString()}]"
-        } else ""
-        val json = "{\"type\":\"$type\",\"message\":\"${Js.e(txt)}\"$target$imgs}"
-        sock?.send(json)
-    }
-
-    // ── Game Protocol ──
-    // Send game-touch events (DOOM keys via touch) to the extension
-    fun sendGameTouch(key: String, pressed: Boolean) {
-        val json = "{\"type\":\"game_touch\",\"key\":\"$key\",\"pressed\":$pressed}"
-        sock?.send(json)
+        sock?.send("{\"type\":\"$type\",\"message\":\"${Js.e(txt)}\"$target}")
     }
 
     // ── Render Protocol ──
@@ -414,13 +396,7 @@ class PiWebSocket : WebSocketListener() {
         }
 
         if (tp == "compaction_start") _compacting.value = true
-        if (tp == "compaction_end") { _compacting.value = false; _retryStatus.value = null }
-        if (tp == "auto_retry_start") {
-            val attempt = (j["attempt"] as? Number)?.toInt() ?: 0
-            val max = (j["maxAttempts"] as? Number)?.toInt() ?: 0
-            _retryStatus.value = "Retry $attempt/$max"
-        }
-        if (tp == "auto_retry_end") _retryStatus.value = null
+        if (tp == "compaction_end") _compacting.value = false
         if (tp == "extension_ui_request") handleExtensionUI(j)
         if (tp == "extension_ui_dismiss") {
             val id = Js.gets(j, "id") ?: return
@@ -771,7 +747,6 @@ class PiWebSocket : WebSocketListener() {
                 name = (s["name"] as? String) ?: "",
                 kind = (s["kind"] as? String) ?: "peer",
                 status = (s["status"] as? String) ?: "idle",
-                connectedAt = ((s["connectedAt"] as? Number) ?: 0).toLong(),
                 lastActivity = ((s["lastActivity"] as? Number) ?: 0).toLong(),
                 messageCount = ((s["messageCount"] as? Number) ?: 0).toInt(),
                 turnIndex = ((s["turnIndex"] as? Number) ?: 0).toInt(),
@@ -863,7 +838,7 @@ class PiWebSocket : WebSocketListener() {
         if (method == "notify") {
             val msg = Js.gets(j, "message") ?: Js.gets(j, "content") ?: "Notification"
             val nt = Js.gets(j, "notifyType") ?: Js.gets(j, "type") ?: "info"
-            val banner = BannerMessage(msg, nt, System.currentTimeMillis())
+            val banner = BannerMessage(msg, nt)
             val list = _notifyBanners.value.toMutableList()
             list.add(banner)
             // Keep max 5 banners
@@ -892,11 +867,6 @@ class PiWebSocket : WebSocketListener() {
             _widgets.value = current
             return
         }
-        if (method == "set_editor_text") {
-            _editorText.tryEmit(Js.gets(j, "text") ?: "")
-            return
-        }
-
         // Dialog methods: add to pending requests
         val rawOpts = j["options"] as? List<*>
         val options = rawOpts?.map { it?.toString() ?: "" } ?: emptyList()
@@ -908,8 +878,7 @@ class PiWebSocket : WebSocketListener() {
             message = Js.gets(j, "message"),
             options = options,
             placeholder = Js.gets(j, "placeholder"),
-            prefill = Js.gets(j, "prefill"),
-            timeout = (j["timeout"] as? Number)?.toLong()
+            prefill = Js.gets(j, "prefill")
         )
 
         _uiRequests.value = _uiRequests.value.toMutableList().apply { add(req) }
@@ -1023,8 +992,7 @@ data class ExtensionUIRequest(
     val message: String? = null,
     val options: List<String> = emptyList(),
     val placeholder: String? = null,
-    val prefill: String? = null,
-    val timeout: Long? = null
+    val prefill: String? = null
 )
 
 // ── Session model ──
@@ -1051,7 +1019,6 @@ data class RemoteSession(
     val name: String,
     val kind: String = "peer",
     val status: String,
-    val connectedAt: Long,
     val lastActivity: Long,
     val messageCount: Int,
     val turnIndex: Int,
@@ -1064,8 +1031,7 @@ data class RemoteSession(
 /** Banner/toast from extension_ui notify() */
 data class BannerMessage(
     val content: String,
-    val type: String,        // "info" | "warning" | "error"
-    val timestamp: Long
+    val type: String         // "info" | "warning" | "error"
 )
 
 /** Generic TUI render frame — any Pi extension UI component */

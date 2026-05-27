@@ -1,7 +1,6 @@
 package com.piremote
 
 import android.content.Context
-import android.net.Uri
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
@@ -88,42 +87,6 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     // cancels the previous one before opening a new one, so reconnects
     // don't stack observers; disconnect() cancels for good.
     private var connectionScope: CoroutineScope? = null
-
-    // Attached images for the current message
-    private val _attachedImages = MutableStateFlow<List<Uri>>(emptyList())
-    val attachedImagesFlow: StateFlow<List<Uri>> get() = _attachedImages
-    private val _attachedBase64 = MutableStateFlow<Map<Uri, String>>(emptyMap())
-
-    fun addImage(uri: Uri) {
-        val current = _attachedImages.value.toMutableList()
-        if (!current.contains(uri)) {
-            current.add(uri)
-            _attachedImages.value = current
-            viewModelScope.launch {
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    val b64 = uriToBase64(uri)
-                    _attachedBase64.value = _attachedBase64.value.toMutableMap().apply { put(uri, b64) }
-                }
-            }
-        }
-    }
-    fun removeImage(uri: Uri) {
-        _attachedImages.value = _attachedImages.value.filter { it != uri }
-        _attachedBase64.value = _attachedBase64.value.toMutableMap().apply { remove(uri) }
-    }
-    fun clearImages() {
-        _attachedImages.value = emptyList()
-        _attachedBase64.value = emptyMap()
-    }
-    fun getBase64ForImage(uri: Uri): String = _attachedBase64.value[uri] ?: ""
-    fun getMimeTypeForImage(uri: Uri): String {
-        return try { _ctx.contentResolver.getType(uri) ?: "image/jpeg" } catch (_: Exception) { "image/jpeg" }
-    }
-    private fun uriToBase64(uri: Uri): String {
-        val stream = _ctx.contentResolver.openInputStream(uri) ?: return ""
-        val bytes = stream.use { it.readBytes() }
-        return android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-    }
 
     val connectedScreen = _connectedScreen
     fun showSessionsScreen() { _connectedScreen.value = ConnectedScreen.Sessions }
@@ -269,11 +232,6 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 try { PiService.notifyDone(_ctx, host, summary, done.durationMs) } catch (_: Exception) {}
             }
         }
-        // An extension can prefill the input editor (ctx.ui.setEditorText); mirror
-        // that into the input field so the phone reflects the host's editor state.
-        scope.launch {
-            _ws.editorTextFlow.collect { _inp.value = it }
-        }
         _connectedScreen.value = ConnectedScreen.Chat
         _ws.connect(u)
     }
@@ -290,15 +248,9 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
 
     fun sendPrompt() {
         val t = _inp.value.trim()
-        val images = _attachedImages.value
-        if (t.isNotEmpty() || images.isNotEmpty()) {
-            _ws.sendPrompt(t, _selectedSession.value, images.mapNotNull { uri ->
-                val b64 = getBase64ForImage(uri)
-                val mime = getMimeTypeForImage(uri)
-                if (b64.isNotEmpty()) "data:$mime;base64,$b64" else null
-            })
+        if (t.isNotEmpty()) {
+            _ws.sendPrompt(t, _selectedSession.value)
             _inp.value = ""
-            clearImages()
         }
     }
     fun sendSteer() {

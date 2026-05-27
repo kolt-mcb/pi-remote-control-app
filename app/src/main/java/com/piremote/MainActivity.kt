@@ -2,7 +2,6 @@ package com.piremote
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
@@ -46,17 +45,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // Image picker — lets user select one or more images
-    // Callback set from within setContent where vm is available
-    private var onImagePicked: ((Uri) -> Unit)? = null
-    private val imagePickerLauncher = registerForActivityResult(
-        ActivityResultContracts.GetMultipleContents()
-    ) { uris: List<Uri> ->
-        for (uri in uris) {
-            onImagePicked?.invoke(uri)
-        }
-    }
-
     private fun requestNotificationsPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             val hasPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -74,8 +62,6 @@ class MainActivity : ComponentActivity() {
             PiRemoteTheme {
                 Box(modifier = Modifier.fillMaxSize().safeContentPadding()) {
                 val vm: ChatViewModel = viewModel(factory = ChatViewModel.Factory(ws, this@MainActivity))
-                // Wire up the image picker callback (Activity-level refs to ViewModel methods)
-                onImagePicked = vm::addImage
                 val st: ChatUIState = vm.st
                 val url by st.serverUrl.collectAsState()
                 val inp: String by st.inputText.collectAsState()
@@ -91,7 +77,6 @@ class MainActivity : ComponentActivity() {
                 val statuses by ws.statusesFlow.collectAsState()
                 val widgets by ws.widgetsFlow.collectAsState()
                 val compacting by ws.compactingFlow.collectAsState()
-                val retryStatus by ws.retryStatusFlow.collectAsState()
                 val notifyBanners by ws.notifyBannerFlow.collectAsState()
                 val uiTitle by ws.uiTitleFlow.collectAsState()
                 val clientCount by ws.clientCountFlow.collectAsState()
@@ -99,8 +84,6 @@ class MainActivity : ComponentActivity() {
                 val savedSessions by ws.savedSessionsFlow.collectAsState()
                 // Generic TUI render frames from any Pi extension
                 val renderFrame by ws.renderFrameFlow.collectAsState()
-                // Attached images for the current message
-                val attachedImages by vm.attachedImagesFlow.collectAsState()
 
                 // Mirror the host Pi's active theme into the app palette. The host
                 // broadcasts theme_info on connect and whenever its theme changes;
@@ -167,17 +150,13 @@ class MainActivity : ComponentActivity() {
                             statuses = statuses,
                             widgets = widgets,
                             compacting = compacting,
-                            retryStatus = retryStatus,
                             notifyBanners = notifyBanners,
                             uiTitle = uiTitle,
                             clientCount = clientCount,
-                            turnSummary = turnSummary,
-                            attachedImages = attachedImages,
-                            onPickImages = { imagePickerLauncher.launch("image/*") },
-                            onRemoveImage = { uri: Uri -> vm.removeImage(uri) }
+                            turnSummary = turnSummary
                         )
                     status == ConnectionStatus.Connected ->
-                        SessionsScreen(vm, sessions, selectedSession, compacting, retryStatus, clientCount, savedSessions)
+                        SessionsScreen(vm, sessions, selectedSession, compacting, clientCount, savedSessions)
                     else ->
                         ConnectScreen(vm, url, inp, ms, assist, status, urlHistory, sessions)
                 }

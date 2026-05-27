@@ -4,13 +4,7 @@
 # accidentally pasted into a ProGuard file — R8 doesn't parse it and the
 # whole rules file fails to compile, which kills minifyReleaseWithR8.
 
-# Coil image loading — uses reflection for transformations / image loaders.
--keep class coil.** { *; }
--dontwarn coil.**
-
-# OkHttp (transitively used by Coil + the WS client). OkHttp ships with
-# its own consumer rules but the JsonReader internals trip platform
-# warnings without these.
+# OkHttp
 -dontwarn okhttp3.internal.platform.**
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**

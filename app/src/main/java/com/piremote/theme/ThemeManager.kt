@@ -25,15 +25,5 @@ object ThemeManager {
         get() = _flow.value
         set(value) { _flow.value = value }
 
-    // ▸ Built-in palettes
-    private val defaultDark = PiRemoteTheme.defaultDark
-    private val defaultLight = PiRemoteTheme.defaultLight
-
-    val builtIn = mapOf(
-        "pi-dark"  to defaultDark,
-        "pi-light" to defaultLight,
-    )
-
-    fun setBuiltin(name: String) { builtIn[name]?.let { current = it } }
     fun applyRemote(t: PiRemoteTheme) { current = t }
 }

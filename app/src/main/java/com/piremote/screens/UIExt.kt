@@ -248,44 +248,10 @@ fun PiStatusBarLine(statuses: Map<String, String>) {
     }
 }
 
-/** Pi Terminal Styled Compaction Banner */
-@Composable
-fun PiCompactingBanner() {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth()
-            .border(BorderStroke(0.5.dp, borderMuted), RoundedCornerShape(0.dp))
-            .background(bgSecondary)
-            .padding(horizontal = 10.dp, vertical = 4.dp)) {
-        CircularProgressIndicator(modifier = Modifier.size(10.dp), color = thinkingBorder, strokeWidth = 1.5.dp)
-        Text("compacting context...", color = thinkingBorder, fontFamily = piMono, fontSize = 11.sp, fontStyle = FontStyle.Italic)
-    }
-}
-
-/** Pi Terminal Styled Retry Banner */
-@Composable
-fun PiRetryBanner(status: String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth()
-            .border(BorderStroke(0.5.dp, error.copy(alpha = 0.3f)), RoundedCornerShape(0.dp))
-            .background(error.copy(alpha = 0.08f))
-            .padding(horizontal = 10.dp, vertical = 3.dp)) {
-        Text("retry: $status", color = error, fontFamily = piMono, fontSize = 10.sp)
-    }
-}
-
 // ── Backwards-compatible aliases ──────────────────────────────────────
-
-val errorColor = error
-val accentColor = accent
 
 @Composable
 fun WidgetPanel(key: String, lines: List<String>) = PiWidgetPanel(key, lines)
 
 @Composable
 fun StatusBarLine(statuses: Map<String, String>) = PiStatusBarLine(statuses)
-
-@Composable
-fun CompactingBanner() = PiCompactingBanner()
-
-@Composable
-fun RetryBanner(status: String) = PiRetryBanner(status)

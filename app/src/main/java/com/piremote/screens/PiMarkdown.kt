@@ -23,6 +23,14 @@ import dev.snipme.highlights.model.ColorHighlight
 import dev.snipme.highlights.model.SyntaxLanguage
 import dev.snipme.highlights.model.SyntaxTheme
 
+// Pre-compiled regex for markdown parsing — avoids per-call allocation in hot paths
+private val boldStarRe = boldStarRe
+private val boldUndersRe = boldUndersRe
+private val italicStarRe = italicStarRe
+private val italicUndersRe = italicUndersRe
+private val inlineCodeRe = Regex("""`([^`\n]+?)`""")
+private val linkRe = Regex("""\[([^]\n]+?)\]\(([^)\n]+?)\)""")
+
 // Hand-rolled markdown renderer — pi's terminal renders markdown with theme
 // colors (mdHeading/mdCode/mdQuote/...), so we mirror that look in the app.
 // Intentionally minimal: handles the patterns pi actually emits, no tables.
@@ -48,32 +56,32 @@ fun parseInlineMd(text: String, baseColor: Color, depth: Int = 0): AnnotatedStri
 
     val patterns = listOf<Pair<Regex, (MatchResult) -> Match>>(
         // Bold with ** ... **  (non-greedy, no nested **)
-        Regex("""\*\*([^*\n]+?)\*\*""") to { m ->
+        boldStarRe to { m ->
             Match(m.range.first, m.range.last + 1,
                 SpanStyle(color = baseColor, fontWeight = FontWeight.Bold), m.groupValues[1])
         },
         // Bold with __ ... __
-        Regex("""__([^_\n]+?)__""") to { m ->
+        boldUndersRe to { m ->
             Match(m.range.first, m.range.last + 1,
                 SpanStyle(color = baseColor, fontWeight = FontWeight.Bold), m.groupValues[1])
         },
         // Italic with * ... *  (single-star, must not be **)
-        Regex("""(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)""") to { m ->
+        italicStarRe to { m ->
             Match(m.range.first, m.range.last + 1,
                 SpanStyle(color = baseColor, fontStyle = FontStyle.Italic), m.groupValues[1])
         },
         // Italic with _ ... _  (must not be __)
-        Regex("""(?<!_)_(?!_)([^_\n]+?)_(?!_)""") to { m ->
+        italicUndersRe to { m ->
             Match(m.range.first, m.range.last + 1,
                 SpanStyle(color = baseColor, fontStyle = FontStyle.Italic), m.groupValues[1])
         },
         // Inline code `...` — uses mdCode color, no background to keep terminal feel.
-        Regex("""`([^`\n]+?)`""") to { m ->
+        inlineCodeRe to { m ->
             Match(m.range.first, m.range.last + 1,
                 SpanStyle(color = mdCode, fontWeight = FontWeight.Medium), m.groupValues[1])
         },
         // Link [text](url)
-        Regex("""\[([^\]\n]+?)\]\(([^)\n]+?)\)""") to { m ->
+        linkRe to { m ->
             Match(m.range.first, m.range.last + 1,
                 SpanStyle(color = mdLink, textDecoration = TextDecoration.Underline), m.groupValues[1],
                 trail = " (${m.groupValues[2]})",
@@ -125,7 +133,7 @@ fun PiMarkdown(
     baseSize: TextUnit = 13.sp,
     modifier: Modifier = Modifier
 ) {
-    val lines = remember(text) { text.split("\n") }
+    val lines = androidx.compose.runtime.remember(text) { text.split("\n") }
     Column(modifier = modifier) {
         var i = 0
         while (i < lines.size) {
@@ -211,7 +219,7 @@ private fun MdListItem(bullet: String, body: String, indent: Int, baseColor: Col
 @Composable
 private fun MdCodeBlock(lines: List<String>, lang: String?) {
     val code = lines.joinToString("\n")
-    val annotated = remember(code, lang) { highlightCode(code, lang) }
+    val annotated = androidx.compose.runtime.remember(code, lang) { highlightCode(code, lang) }
     Row(modifier = Modifier.padding(vertical = 3.dp), verticalAlignment = androidx.compose.ui.Alignment.Top) {
         // Left rule — matches pi's quoteBorder-style accent for code blocks.
         Box(modifier = Modifier.width(2.dp).fillMaxHeight().background(mdCodeBlockBorder))
@@ -294,9 +302,3 @@ private val piSyntaxTheme = SyntaxTheme(
     punctuation      = codePunctuation.toRgb(),
     mark             = codeFunction.toRgb(),   // function-call style marks
 )
-
-// `remember` import without pulling all of runtime into this file.
-@Composable
-private fun <T> remember(key: Any?, calc: () -> T): T = androidx.compose.runtime.remember(key) { calc() }
-@Composable
-private fun <T> remember(k1: Any?, k2: Any?, calc: () -> T): T = androidx.compose.runtime.remember(k1, k2) { calc() }

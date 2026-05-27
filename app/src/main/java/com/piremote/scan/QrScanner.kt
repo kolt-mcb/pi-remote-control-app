@@ -46,8 +46,6 @@ import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
-private const val TAG = "QrScanner"
-
 @Composable
 fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> Unit) {
     val ctx = LocalContext.current
@@ -135,8 +133,6 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
                 }
             }
         }
-
-        DisposableEffect(lifecycle) { onDispose {} }
     }
 }
 

@@ -2,7 +2,6 @@ package com.piremote.screens
 
 import android.content.ClipData
 import android.content.ClipboardManager
-import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -13,21 +12,14 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -93,12 +85,13 @@ fun PiBox(
     borderColor: Color = border,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val showBorder = !header.isNullOrEmpty() || borderColor != borderMuted
     Column {
-        if (!header.isNullOrEmpty() || borderColor != borderMuted) {
+        if (showBorder) {
             PiTopBorder(header, borderColor)
         }
         PiGutter(borderColor, content)
-        if (!header.isNullOrEmpty() || borderColor != borderMuted) {
+        if (showBorder) {
             PiBottomBorder(borderColor)
         }
     }
@@ -152,6 +145,10 @@ fun ConnectScreen(
     var t by remember { mutableStateOf(url) }
     var showScanner by remember { mutableStateOf(false) }
     var inputMode by remember { mutableStateOf(false) }
+    val connect = {
+        val u = t.ifEmpty { "ws://192.168.1.100:8765" }
+        vm.setServerUrl(u); vm.connect()
+    }
 
     if (showScanner) {
         com.piremote.scan.QrScanner(
@@ -214,10 +211,7 @@ fun ConnectScreen(
                                     ),
                                     textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 12.sp),
                                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Go),
-                                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = {
-                                        val u = t.ifEmpty { "ws://192.168.1.100:8765" }
-                                        vm.setServerUrl(u); vm.connect()
-                                    })
+                                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = connect)
                                 )
                                 
                                 // Recent connections
@@ -241,10 +235,7 @@ fun ConnectScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .border(1.dp, accent, RoundedCornerShape(0.dp))
-                                .clickable {
-                                    val u = t.ifEmpty { "ws://192.168.1.100:8765" }
-                                    vm.setServerUrl(u); vm.connect()
-                                }
+                                .clickable { connect() }
                                 .padding(vertical = 8.dp)
                         ) {
                             Text("Connect", color = accent, fontFamily = piMono, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Center))
@@ -453,7 +444,6 @@ fun SessionsScreen(
     sessions: List<com.piremote.RemoteSession>,
     selectedSession: String,
     compacting: Boolean = false,
-    retryStatus: String? = null,
     clientCount: Int = 0,
     savedSessions: List<com.piremote.SavedSession> = emptyList()
 ) {
@@ -716,7 +706,6 @@ fun PiFooter(
     selectedSession: String,
     messageCount: Int,
     compacting: Boolean = false,
-    retryStatus: String? = null,
     clientCount: Int = 0
 ) {
     Column(modifier = Modifier.fillMaxWidth().background(footerBg)) {
@@ -753,11 +742,10 @@ fun PiFooter(
  *   │ bash(2) read(3) web(1) │
  *   └────────────────────────┘
  * 
- * Tap to expand for details or dismiss. Terminal-styled chips.
+ * Terminal-styled chips showing tool usage counts.
  */
 @Composable
 fun TurnSummaryPanel(summary: com.piremote.PiWebSocket.TurnSummary) {
-    var expanded by remember { mutableStateOf(false) }
     PiRoundedBox(
         header = "Last turn (${summary.totalCalls} calls)",
         borderColor = borderMuted,
@@ -765,13 +753,12 @@ fun TurnSummaryPanel(summary: com.piremote.PiWebSocket.TurnSummary) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { expanded = !expanded }
                     .padding(horizontal = 4.dp, vertical = 3.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 summary.toolsUsed.forEach { tool ->
-                    PiTurnToolChip(tool.name, tool.count, expanded)
+                    PiTurnToolChip(tool.name, tool.count)
                 }
             }
         }
@@ -780,11 +767,11 @@ fun TurnSummaryPanel(summary: com.piremote.PiWebSocket.TurnSummary) {
 
 /** Single tool chip: `toolName(N)` with icon */
 @Composable
-fun PiTurnToolChip(name: String, count: Int, isExpanded: Boolean) {
+fun PiTurnToolChip(name: String, count: Int) {
     val icon = when {
         name == "bash" -> "⌘"
         name == "read" -> "📖"
-        name == "write" -> "✏"  
+        name == "write" -> "✏"
         name == "edit" -> "🔧"
         name == "ToolSearch" -> "🔍"
         name == "WebFetch" -> "🌐"
@@ -795,11 +782,7 @@ fun PiTurnToolChip(name: String, count: Int, isExpanded: Boolean) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(icon, fontFamily = piMono, fontSize = 10.sp)
-        if (isExpanded) {
-            Text(name, color = textPrimary, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-        } else {
-            Text(name, color = textPrimary, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-        }
+        Text(name, color = textPrimary, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium)
         Text("($count)", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
     }
 }
@@ -871,14 +854,10 @@ fun ChatScreen(
     statuses: Map<String, String> = emptyMap(),
     widgets: Map<String, List<String>> = emptyMap(),
     compacting: Boolean = false,
-    retryStatus: String? = null,
     notifyBanners: List<com.piremote.BannerMessage> = emptyList(),
     uiTitle: String? = null,
     clientCount: Int = 0,
-    turnSummary: com.piremote.PiWebSocket.TurnSummary? = null,
-    attachedImages: List<Uri> = emptyList(),
-    onPickImages: () -> Unit = {},
-    onRemoveImage: (Uri) -> Unit = {}
+    turnSummary: com.piremote.PiWebSocket.TurnSummary? = null
 ) {
     val ls = rememberLazyListState()
     val cnt = messages.size + if (assist.isNotBlank()) 2 else 0
@@ -995,7 +974,7 @@ fun ChatScreen(
                 commands = commands
             )
         }
-        PiFooter(sessions, selectedSession, messages.size, compacting, retryStatus, clientCount)
+        PiFooter(sessions, selectedSession, messages.size, compacting, clientCount)
     }
 }
 
@@ -1059,72 +1038,11 @@ fun PiBlinkBlock(color: Color = accent) {
     )
 }
 
-// ── Pi Terminal Input Editor ───────────────────────────────────────────
-
-/**
- * Compact accessory row of hard-to-reach keys, sized to live just above the
- * IME so users don't have to dig through the symbol layer for `/ @ ! ` ` tab`.
- * Horizontally scrollable — add more keys without reflowing the layout.
- *
- * Esc collapses steer/follow-up mode if active, otherwise clears the input.
- * Tab inserts a literal "\t" (pi's editor renders it as four spaces).
- */
-@Composable
-fun PiHotkeyBar(
-    input: String,
-    inSpecialMode: Boolean,
-    onInsert: (String) -> Unit,
-    onEsc: () -> Unit
-) {
-    val keys = listOf("/", "@", "!", "`", "~", "\$", "|", "↹")
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(bg)
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 4.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        // Esc — special action button, styled distinctly.
-        val escEnabled = inSpecialMode || input.isNotEmpty()
-        Box(
-            modifier = Modifier
-                .border(1.dp, if (escEnabled) accent else borderMuted, RoundedCornerShape(0.dp))
-                .background(bgSecondary)
-                .clickable(enabled = escEnabled, onClick = onEsc)
-                .padding(horizontal = 10.dp, vertical = 6.dp)
-        ) {
-            Text(
-                "Esc",
-                color = if (escEnabled) accent else textMuted,
-                fontFamily = piMono,
-                fontSize = 12.sp
-            )
-        }
-        // Vertical separator.
-        Box(modifier = Modifier.width(1.dp).height(20.dp).background(borderMuted))
-        // Char inserters.
-        for (k in keys) {
-            Box(
-                modifier = Modifier
-                    .border(1.dp, borderMuted, RoundedCornerShape(0.dp))
-                    .background(bgSecondary)
-                    .clickable { onInsert(if (k == "↹") "\t" else k) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Text(k, color = textPrimary, fontFamily = piMono, fontSize = 12.sp)
-            }
-        }
-    }
-}
-
 // ── Terminal-style inline input (live prompt) ─────────────────────────
 
 /**
  * Bare terminal prompt rendered below the scrollback with no visual
  * separation — just `>` sigil + TextField, same bg, same font, same padding.
- * The old PiInputEditor (boxed + toolbar) is kept only for compatibility.
  */
 @Composable
 fun PiTerminalInput(
@@ -1133,10 +1051,7 @@ fun PiTerminalInput(
     setSteerMode: (Boolean) -> Unit,
     followUpMode: Boolean,
     setFollowUpMode: (Boolean) -> Unit,
-    commands: List<com.piremote.RemoteCommand> = emptyList(),
-    attachedImages: List<Uri> = emptyList(),
-    onPickImages: () -> Unit = {},
-    onRemoveImage: (Uri) -> Unit = {}
+    commands: List<com.piremote.RemoteCommand> = emptyList()
 ) {
     // ── Slash command autocomplete row ─────────────────────────────
     val isSlash = input.trimStart().startsWith("/") && !busy
@@ -1288,68 +1203,6 @@ fun PiStartupHeader() {
             "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.",
             color = textMuted, fontFamily = piMono, fontSize = 12.sp, lineHeight = 17.sp
         )
-    }
-}
-
-/** Image preview chip — small thumbnail with × to remove */
-@Composable
-fun PiImagePreviewChip(uri: Uri, onRemove: () -> Unit) {
-    val context = LocalContext.current
-    var bitmap by remember(uri) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    LaunchedEffect(uri) {
-        bitmap = try {
-            context.contentResolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it) }
-        } catch (_: Exception) { null }
-    }
-    Box(modifier = Modifier.size(48.dp)) {
-        bitmap?.let { bmp ->
-            androidx.compose.foundation.Image(
-                bitmap = bmp.asImageBitmap(),
-                contentDescription = "Attached image",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(4.dp))
-                    .border(1.dp, borderMuted, RoundedCornerShape(4.dp)),
-                contentScale = ContentScale.Crop
-            )
-            // Dimension label
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(horizontal = 3.dp, vertical = 1.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text("IMG", color = Color.White, fontFamily = piMono, fontSize = 7.sp)
-            }
-        } ?: run {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(4.dp))
-                    .border(1.dp, borderMuted, RoundedCornerShape(4.dp))
-                    .background(bgSecondary),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("IMG", color = textMuted, fontFamily = piMono, fontSize = 9.sp)
-            }
-        }
-        // Remove button
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .size(16.dp)
-                .background(Color.Black.copy(alpha = 0.7f), CircleShape)
-                .clickable(onClick = onRemove),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                Icons.Outlined.Close,
-                contentDescription = "Remove image",
-                tint = Color.White,
-                modifier = Modifier.size(10.dp)
-            )
-        }
     }
 }
 
@@ -1667,20 +1520,6 @@ fun parseToolArgs(json: String): String {
     } catch (_: Exception) {
         json.take(60)
     }
-}
-
-val timeFormat = SimpleDateFormat("h:mm a", Locale.getDefault())
-val timeFormatFull = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
-fun tsNow(): String = timeFormat.format(Date())
-fun formatTs(ts: Long): String = timeFormat.format(Date(ts))
-fun formatTsFull(ts: Long): String = timeFormatFull.format(Date(ts))
-
-/** Blinking dot for streaming */
-@Composable
-fun PiBlinkDot(color: Color = accent) {
-    var blink by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(500); blink = !blink } }
-    Box(modifier = Modifier.size(5.dp).clip(CircleShape).background(if (blink) color else Color.Transparent))
 }
 
 /** Pi-style session time formatting */
