@@ -1,0 +1,26 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Machine-specific SDK path — must not be committed
+local.properties
+
+# Kotlin
+.kotlin/
+
+# Claude / AI tooling
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
