@@ -418,6 +418,11 @@ class PiWebSocket : WebSocketListener() {
             val inputMode = Js.gets(j, "inputMode") ?: "none"
             val title = Js.gets(j, "title") ?: ""
             val dismiss = j["dismiss"] as? Boolean == true
+            // Per-line tap values: non-empty entry => the line is tappable and
+            // the entry is the string sent back via sendInput on tap. Optional
+            // for backward compat; renderers that don't set it get plain text.
+            val tapValuesRaw = j["tapValues"]
+            val tapValues = (tapValuesRaw as? List<*>)?.map { it?.toString() ?: "" } ?: emptyList()
             // Empty lines or explicit dismiss → clear the render frame
             val resolved = ansiLines.filterIsInstance<String>()
             if (dismiss || resolved.isEmpty()) {
@@ -427,7 +432,8 @@ class PiWebSocket : WebSocketListener() {
                     id = id,
                     ansiLines = resolved,
                     inputMode = inputMode,
-                    title = title
+                    title = title,
+                    tapValues = tapValues
                 )
             }
         }
@@ -1039,5 +1045,11 @@ data class RenderFrame(
     val id: String,              // component ID for response matching
     val ansiLines: List<String>, // rendered ANSI-colored text lines
     val inputMode: String,       // "none" | "text" | "keys"
-    val title: String = ""
+    val title: String = "",
+    // Optional parallel array to [ansiLines]: lines whose corresponding entry
+    // is non-empty are tappable, and the entry is the value sent back via
+    // sendInput on tap. Empty/missing => the line is plain text. Lets a
+    // render-frame menu (e.g. a session picker) be touch-driven without
+    // building per-extension UI on the phone.
+    val tapValues: List<String> = emptyList()
 )

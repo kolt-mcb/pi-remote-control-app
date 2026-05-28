@@ -212,18 +212,33 @@ fun TerminalRenderView(frame: com.piremote.RenderFrame, onInput: (String) -> Uni
                 }
             }
 
-            // Rendered ANSI lines
+            // Rendered ANSI lines. Lines with a non-empty tapValues[i] entry
+            // get a clickable modifier; tapping sends the entry back via
+            // sendInput, so a render-frame menu (e.g. /resume's session list)
+            // is touch-driven with no per-extension UI on the phone.
             Column(modifier = Modifier.weight(1f).fillMaxWidth().padding(2.dp)) {
-                frame.ansiLines.forEach { line ->
+                frame.ansiLines.forEachIndexed { i, line ->
                     val segments = parseAnsiLine(line)
                     if (segments.all { it.first.isEmpty() }) {
                         Spacer(Modifier.height(12.dp))
                     } else {
-                        Text(
-                            buildAnsiText(segments),
-                            fontFamily = com.piremote.screens.piMono,
-                            fontSize = 12.sp,
-                        )
+                        val tap = frame.tapValues.getOrNull(i).orEmpty()
+                        val text = @Composable {
+                            Text(
+                                buildAnsiText(segments),
+                                fontFamily = com.piremote.screens.piMono,
+                                fontSize = 12.sp,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            )
+                        }
+                        if (tap.isNotEmpty()) {
+                            Box(modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onInput(tap) }
+                            ) { text() }
+                        } else {
+                            text()
+                        }
                     }
                 }
             }
