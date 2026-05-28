@@ -39,7 +39,7 @@ jobs:
 
       # Compute the same versionCode build.gradle.kts uses: git commit count
       # plus the VERSION_CODE_OFFSET. This repo was split out of
-      # grunt3714-lgtm/pi-remote-control where `latest` had reached
+      # kolt-mcb/pi-remote-control where `latest` had reached
       # versionCode 89, so the offset (100) keeps codes strictly above that.
       # Keep this offset in sync with VERSION_CODE_OFFSET in app/build.gradle.kts.
       # The in-app updater reads versionCode from the release body to decide

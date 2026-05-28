@@ -276,7 +276,7 @@ fun ConnectScreen(
             // Quick Start Guide
             PiBox(header = "Quick Start", borderColor = borderMuted) {
                 Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                    Text("1  pi install git:github.com/grunt3714-lgtm/pi-remote-control", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
+                    Text("1  pi install git:github.com/kolt-mcb/pi-remote-control", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
                     Text("2  Run:  pi   (extension auto-loads; QR + URL print on startup)", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
                     Text("3  Scan the QR or paste the ws://…?token=…  URL above", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
                 }
