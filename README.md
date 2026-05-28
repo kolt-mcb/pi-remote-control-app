@@ -1,11 +1,11 @@
 # Pi Remote Control — Android app
 
-Android companion app for [`pi-remote-control`](https://github.com/grunt3714-lgtm/pi-remote-control),
+Android companion app for [`pi-remote-control`](https://github.com/kolt-mcb/pi-remote-control),
 a Pi extension that exposes a Pi agent over a LAN WebSocket. Scan the QR code the
 extension prints on `session_start`, and drive the agent from your phone.
 
 This is the **app** half. The Pi extension (host side) lives in its own repo:
-`pi install git:github.com/grunt3714-lgtm/pi-remote-control`.
+`pi install git:github.com/kolt-mcb/pi-remote-control`.
 
 ## Install
 
@@ -22,7 +22,7 @@ First launch requests:
 ## Build from source
 
 ```bash
-git clone https://github.com/grunt3714-lgtm/pi-remote-control-app
+git clone https://github.com/kolt-mcb/pi-remote-control-app
 cd pi-remote-control-app
 ./gradlew :app:assembleDebug   # or :app:assembleRelease
 ```

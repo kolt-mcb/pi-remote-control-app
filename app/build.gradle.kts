@@ -13,7 +13,7 @@ plugins {
 // Outside a git checkout (e.g. some IDE sync edge cases) we fall back to
 // versionCode=1 / versionName="0.1.0".
 //
-// VERSION_CODE_OFFSET: this repo was split out of grunt3714-lgtm/pi-remote-control,
+// VERSION_CODE_OFFSET: this repo was split out of kolt-mcb/pi-remote-control,
 // where the rolling `latest` build had already reached versionCode 89. The split
 // reset the commit count, so we add an offset to stay strictly above 89 and keep
 // the updater monotonic. The CI workflow (build-apk.yml) applies the SAME offset
