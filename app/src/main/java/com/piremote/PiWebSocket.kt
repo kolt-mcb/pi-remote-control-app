@@ -16,16 +16,47 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import java.net.URI
+import java.security.MessageDigest
+import java.security.cert.CertificateException
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 class PiWebSocket : WebSocketListener() {
     private var sock: WebSocket? = null
     private var pendingUrl: String = ""
     private var retryCount = 0
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .build()
+
+    /** Build an OkHttpClient suited to the URL: a plain client for `ws://`, or
+     *  a TLS client with **fingerprint-pinned** trust for `wss://?...&fp=<sha256>`.
+     *  Pinning by SHA-256 means we accept any cert whose DER hashes to the
+     *  fingerprint the QR carried — no public CA, no hostname matching needed
+     *  (we connect by IP). The pin is the *only* trust anchor, so the channel
+     *  is end-to-end encrypted between this app and the cert holder. */
+    private fun clientForUrl(url: String): OkHttpClient {
+        val builder = OkHttpClient.Builder()
+            .connectTimeout(10, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+        val uri = try { URI(url) } catch (_: Exception) { null }
+        val fp = uri?.query
+            ?.split('&')
+            ?.firstOrNull { it.startsWith("fp=") }
+            ?.substringAfter("fp=")
+            ?.lowercase()
+        if (uri?.scheme?.equals("wss", ignoreCase = true) == true && !fp.isNullOrBlank()) {
+            val tm = PinningTrustManager(fp)
+            val ssl = SSLContext.getInstance("TLS").apply {
+                init(null, arrayOf<TrustManager>(tm), null)
+            }
+            builder.sslSocketFactory(ssl.socketFactory, tm)
+            // We're pinning by cert content — hostname/IP match is moot.
+            builder.hostnameVerifier { _, _ -> true }
+        }
+        return builder.build()
+    }
 
     // ── Per-agent state ────────────────────────────────────────────────
     // Each connected pi agent (host or peer) gets its own AgentState bag so
@@ -187,13 +218,13 @@ class PiWebSocket : WebSocketListener() {
         if (_s.value == ConnectionStatus.Disconnected || _s.value is ConnectionStatus.Error) {
             _s.value = ConnectionStatus.Connecting
         }
-        sock = http.newWebSocket(Request.Builder().url(u).build(), this)
+        sock = clientForUrl(u).newWebSocket(Request.Builder().url(u).build(), this)
     }
     private fun reconnect() {
         if (pendingUrl.isBlank()) return
         if (_s.value == ConnectionStatus.Connecting) return
         _s.value = ConnectionStatus.Connecting
-        sock = http.newWebSocket(Request.Builder().url(pendingUrl).build(), this)
+        sock = clientForUrl(pendingUrl).newWebSocket(Request.Builder().url(pendingUrl).build(), this)
     }
     fun disconnect() {
         pendingUrl = ""
@@ -1053,3 +1084,38 @@ data class RenderFrame(
     // building per-extension UI on the phone.
     val tapValues: List<String> = emptyList()
 )
+
+/**
+ * TrustManager that accepts a server cert *only* if its SHA-256 fingerprint
+ * (over the DER-encoded leaf) matches [expectedHex]. Used to pin the
+ * self-signed TLS cert the pi-remote-control extension generates: the phone
+ * scans the cert's fingerprint out of the QR alongside the auth token, and
+ * this manager rejects any other cert (including a CA-signed one) — closing
+ * the LAN-sniff attack surface even without a real PKI.
+ *
+ * Hostname matching is left to the OkHttp client's hostname verifier, which
+ * is set to a no-op when we use this manager: the cert is bound by content,
+ * not by name, so the IP-vs-CN mismatch that's normal here is fine.
+ */
+private class PinningTrustManager(expectedHex: String) : X509TrustManager {
+    private val expected = expectedHex.lowercase()
+
+    override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {
+        if (chain.isEmpty()) throw CertificateException("empty server cert chain")
+        val leaf = chain[0]
+        val digest = MessageDigest.getInstance("SHA-256").digest(leaf.encoded)
+        val actual = digest.joinToString("") { "%02x".format(it) }
+        if (actual != expected) {
+            throw CertificateException(
+                "Pinned cert fingerprint mismatch — expected sha256:${expected.take(8)}…, got sha256:${actual.take(8)}…"
+            )
+        }
+    }
+
+    // Server-side TLS only; we don't validate client certs.
+    override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
+
+    // Returning an empty array tells Android we don't trust any CA — every
+    // cert must match the pin or be rejected.
+    override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+}
