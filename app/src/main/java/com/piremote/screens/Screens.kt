@@ -13,10 +13,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -140,13 +143,13 @@ fun PiRoundedBox(
 fun ConnectScreen(
     vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>,
     assist: String, status: ConnectionStatus, urlHistory: Set<String>,
-    sessions: List<com.piremote.RemoteSession> = emptyList()
+    sessions: List<RemoteSession> = emptyList()
 ) {
     var t by remember { mutableStateOf(url) }
     var showScanner by remember { mutableStateOf(false) }
     var inputMode by remember { mutableStateOf(false) }
     val connect = {
-        val u = t.ifEmpty { "ws://192.168.1.100:8765" }
+        val u = t.ifEmpty { "" }
         vm.setServerUrl(u); vm.connect()
     }
 
@@ -197,7 +200,7 @@ fun ConnectScreen(
                                 TextField(
                                     value = t,
                                     onValueChange = { t = it },
-                                    placeholder = { Text("ws://192.168.1.100:8765", color = textMuted, fontFamily = piMono) },
+                                    placeholder = { Text("ws://<IP>:<port>", color = textMuted, fontFamily = piMono) },
                                     modifier = Modifier.fillMaxWidth(),
                                     singleLine = true,
                                     colors = TextFieldDefaults.colors(
@@ -210,8 +213,8 @@ fun ConnectScreen(
                                         cursorColor = accent
                                     ),
                                     textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 12.sp),
-                                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Go),
-                                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onGo = { connect() })
+                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                                    keyboardActions = KeyboardActions(onGo = { connect() })
                                 )
                                 
                                 // Recent connections
@@ -300,14 +303,14 @@ fun ConnectScreen(
 @Composable
 fun UpdateAffordance(modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
-    val updater = remember { com.piremote.UpdateChecker(ctx.applicationContext) }
+    val updater = remember { UpdateChecker(ctx.applicationContext) }
     val currentCode = remember { updater.currentVersionCode() }
     val currentName = remember { updater.currentVersionName() }
     val scope = rememberCoroutineScope()
 
     var checking by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
-    var latest by remember { mutableStateOf<com.piremote.LatestRelease?>(null) }
+    var latest by remember { mutableStateOf<LatestRelease?>(null) }
     var downloading by remember { mutableStateOf(false) }
     var downloadPct by remember { mutableStateOf(0) }
 
@@ -348,7 +351,7 @@ fun UpdateAffordance(modifier: Modifier = Modifier) {
     // "Update available" dialog. Confirms before downloading 40MB.
     latest?.let { r ->
         if (!downloading) {
-            androidx.compose.material3.AlertDialog(
+            AlertDialog(
                 onDismissRequest = { latest = null },
                 title = { Text("Update available", fontFamily = piMono, fontSize = 14.sp) },
                 text = {
@@ -362,7 +365,7 @@ fun UpdateAffordance(modifier: Modifier = Modifier) {
                     }
                 },
                 confirmButton = {
-                    androidx.compose.material3.TextButton(onClick = {
+                    TextButton(onClick = {
                         downloading = true
                         downloadPct = 0
                         scope.launch {
@@ -378,7 +381,7 @@ fun UpdateAffordance(modifier: Modifier = Modifier) {
                     }) { Text("Install") }
                 },
                 dismissButton = {
-                    androidx.compose.material3.TextButton(onClick = { latest = null }) {
+                    TextButton(onClick = { latest = null }) {
                         Text("Later")
                     }
                 }
@@ -388,12 +391,12 @@ fun UpdateAffordance(modifier: Modifier = Modifier) {
 
     // Download progress dialog.
     if (downloading) {
-        androidx.compose.material3.AlertDialog(
+        AlertDialog(
             onDismissRequest = { /* not dismissible mid-download */ },
             title = { Text("Downloading", fontFamily = piMono, fontSize = 14.sp) },
             text = {
                 Column {
-                    androidx.compose.material3.LinearProgressIndicator(
+                    LinearProgressIndicator(
                         progress = { downloadPct / 100f },
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -441,17 +444,33 @@ fun PiTerminalChip(label: String, onClick: () -> Unit) {
 @Composable
 fun SessionsScreen(
     vm: ChatViewModel,
-    sessions: List<com.piremote.RemoteSession>,
+    sessions: List<RemoteSession>,
     selectedSession: String,
     compacting: Boolean = false,
     clientCount: Int = 0,
-    savedSessions: List<com.piremote.SavedSession> = emptyList()
+    savedSessions: List<SavedSession> = emptyList()
 ) {
     val activeSession = sessions.find { it.id == selectedSession }
+    var selectedCategory by remember { mutableStateOf("all") }
 
     // Refresh the saved-session list once when this screen is opened. The
     // response repopulates savedSessionsFlow → savedSessions param.
-    LaunchedEffect(Unit) { vm.refreshSavedSessions() }
+    // Uses key = sessions.size so it fires on first entry AND when the
+    // session list changes (meaning a new peer may have joined/left).
+    LaunchedEffect(sessions.size) {
+        vm.refreshSavedSessions()
+    }
+
+    // Filter saved sessions by selected category
+    val filteredSessions = if (selectedCategory == "all") {
+        savedSessions
+    } else {
+        savedSessions.filter { it.status == selectedCategory }
+    }
+
+    // Count per category for tab badges
+    val counts = savedSessions.groupingBy { it.status }.eachCount()
+    val totalCount = savedSessions.size
     
     Box(modifier = Modifier.fillMaxSize().background(bg)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -519,7 +538,7 @@ fun SessionsScreen(
                     items(sessions, key = { it.id }) { session ->
                         val isSelected = session.id == selectedSession
                         val isBusy = session.status == "busy"
-                        SessionCard(session, isSelected, isBusy) { vm.setSelectedSession(session.id); vm.showChatScreen() }
+                        SessionCard(vm, session, isSelected, isBusy) { vm.setSelectedSession(session.id); vm.showChatScreen() }
                     }
                 }
             }
@@ -533,12 +552,52 @@ fun SessionsScreen(
             // see PR #20 / commit message.)
             PiBox(header = "Saved sessions", borderColor = borderMuted) {
                 Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                    if (savedSessions.isEmpty()) {
-                        Text("No saved sessions yet.", color = textMuted, fontFamily = piMono, fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp))
+                    // ── Category filter tabs ─────────────────────────
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        val categories = listOf(
+                            "all" to "All",
+                            "working" to "Working",
+                            "completed" to "Completed",
+                            "archived" to "Archived"
+                        )
+                        categories.forEach { (key, label) ->
+                            val isActive = key == selectedCategory
+                            val count = if (key == "all") totalCount else (counts[key] ?: 0)
+                            val color = if (isActive) accent else textMuted
+                            val bgC = if (isActive) selectedBg else Color.Transparent
+                            Box(
+                                modifier = Modifier
+                                    .background(bgC)
+                                    .border(1.dp, if (isActive) accent else borderMuted, RoundedCornerShape(0.dp))
+                                    .clickable { selectedCategory = key }
+                                    .padding(horizontal = 7.dp, vertical = 3.dp)
+                            ) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(label, color = color, fontFamily = piMono, fontSize = 10.sp,
+                                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal)
+                                    Text("($count)", color = if (isActive) color else textMuted.copy(alpha = 0.6f),
+                                        fontFamily = piMono, fontSize = 9.sp)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+
+                    // ── Filtered session list ────────────────────────
+                    if (filteredSessions.isEmpty()) {
+                        Text(
+                            if (totalCount == 0) "No saved sessions yet."
+                            else "No $selectedCategory sessions.",
+                            color = textMuted, fontFamily = piMono, fontSize = 11.sp,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
+                        )
                     } else {
                         Text(
-                            "${savedSessions.size} session${if (savedSessions.size != 1) "s" else ""} · tap to resume as a new tab",
+                            "${filteredSessions.size} session${if (filteredSessions.size != 1) "s" else ""} · tap to resume as a new tab",
                             color = textMuted, fontFamily = piMono, fontSize = 10.sp,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
@@ -546,7 +605,7 @@ fun SessionsScreen(
                         LazyColumn(modifier = Modifier.weight(1f, fill = false).heightIn(max = 320.dp),
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                             contentPadding = PaddingValues(horizontal = 4.dp)) {
-                            items(savedSessions, key = { it.path }) { saved ->
+                            items(filteredSessions, key = { it.path }) { saved ->
                                 SavedSessionRow(saved) {
                                     vm.spawnPeerWithSession(saved.path)
                                 }
@@ -562,6 +621,7 @@ fun SessionsScreen(
             PiBox(borderColor = borderMuted) {
                 Column(modifier = Modifier.padding(vertical = 6.dp, horizontal = 10.dp)) {
                     Text("▸ Back: disconnect", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                    Text("▸ Long-press peer: close session", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
                 }
             }
 
@@ -572,19 +632,65 @@ fun SessionsScreen(
 
 /** Row in the saved-sessions list. Tap to spawn `pi --session <path>` as a peer. */
 @Composable
-fun SavedSessionRow(s: com.piremote.SavedSession, onTap: () -> Unit) {
+fun SavedSessionRow(s: SavedSession, onTap: () -> Unit) {
     val label = s.name.ifBlank { s.firstMessage }.ifBlank { s.path.substringAfterLast('/') }
     val trimmed = if (label.length > 40) label.take(39) + "…" else label
     val whenStr = sessionTime(s.modified)
+
+    // Status badge color + icon
+    val statusColor = when (s.status) {
+        "working" -> thinkingBorder
+        "archived" -> textMuted
+        else -> success
+    }
+    val statusLabel = when (s.status) {
+        "working" -> "working"
+        "archived" -> "archived"
+        else -> "completed"
+    }
+    val statusIcon = when (s.status) {
+        "working" -> "◉"
+        "archived" -> "⊘"
+        else -> "✓"
+    }
+
     Row(
         modifier = Modifier.fillMaxWidth()
             .clickable { onTap() }
             .padding(horizontal = 6.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.Top
     ) {
         Text("▸ ", color = accent, fontFamily = piMono, fontSize = 11.sp)
         Column(modifier = Modifier.weight(1f)) {
-            Text(trimmed, color = textPrimary, fontFamily = piMono, fontSize = 12.sp, maxLines = 1)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(trimmed, color = textPrimary, fontFamily = piMono, fontSize = 12.sp, maxLines = 1)
+                // Status badge — only show non-default (non-completed) status
+                if (s.status != "completed") {
+                    Box(
+                        modifier = Modifier
+                            .border(0.5.dp, statusColor, RoundedCornerShape(0.dp))
+                            .padding(horizontal = 4.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            "$statusIcon $statusLabel",
+                            color = statusColor, fontFamily = piMono, fontSize = 9.sp
+                        )
+                    }
+                }
+            }
+            // Model's last reply preview — shown when available so you can see
+            // what the agent is waiting on without opening the session.
+            if (s.lastAssistantMessage.isNotBlank()) {
+                val preview = s.lastAssistantMessage.trim().take(140) +
+                    if (s.lastAssistantMessage.length > 140) "…" else ""
+                Text(
+                    "π ${preview}",
+                    color = thinkingLow,
+                    fontFamily = piMono, fontSize = 10.sp,
+                    fontStyle = FontStyle.Italic,
+                    maxLines = 2
+                )
+            }
             Text("${s.messageCount} msg${if (s.messageCount != 1) "s" else ""} · $whenStr",
                 color = textMuted, fontFamily = piMono, fontSize = 10.sp, maxLines = 1)
         }
@@ -592,8 +698,17 @@ fun SavedSessionRow(s: com.piremote.SavedSession, onTap: () -> Unit) {
 }
 
 /** Card for a single session in the sessions list */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun SessionCard(session: com.piremote.RemoteSession, isSelected: Boolean, isBusy: Boolean, onClick: () -> Unit) {
+fun SessionCard(
+    vm: ChatViewModel,
+    session: RemoteSession,
+    isSelected: Boolean,
+    isBusy: Boolean,
+    onClick: () -> Unit
+) {
+    var showCloseConfirm by remember { mutableStateOf(false) }
+
     PiBox(
         header = session.name.take(16),
         borderColor = if (isSelected) accent else if (isBusy) thinkingBorder.copy(alpha = 0.7f) else borderMuted
@@ -601,7 +716,15 @@ fun SessionCard(session: com.piremote.RemoteSession, isSelected: Boolean, isBusy
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onClick() }
+                .combinedClickable(
+                    onClick = { onClick() },
+                    onLongClick = {
+                        // Don't allow closing the host (self) session
+                        if (session.kind != "self" && !isBusy) {
+                            showCloseConfirm = true
+                        }
+                    }
+                )
                 .padding(vertical = 6.dp, horizontal = 8.dp)
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -657,6 +780,32 @@ fun SessionCard(session: com.piremote.RemoteSession, isSelected: Boolean, isBusy
             }
         }
     }
+
+    // Close confirmation dialog
+    if (showCloseConfirm) {
+        AlertDialog(
+            onDismissRequest = { showCloseConfirm = false },
+            title = { Text("Close session", fontFamily = piMono, fontSize = 14.sp) },
+            text = {
+                Text(
+                    "This will quit peer agent:\n${session.name.take(30)}\n\nThis cannot be undone.",
+                    fontFamily = piMono, fontSize = 12.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { vm.closeSession(session.id); showCloseConfirm = false }
+                ) {
+                    Text("Close", color = error, fontFamily = piMono)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCloseConfirm = false }) {
+                    Text("Cancel", color = textMuted, fontFamily = piMono)
+                }
+            }
+        )
+    }
 }
 
 // ── Pi Terminal Header ─────────────────────────────────────────────────
@@ -664,7 +813,7 @@ fun SessionCard(session: com.piremote.RemoteSession, isSelected: Boolean, isBusy
 @Composable
 fun PiHeader(status: ConnectionStatus, busy: Boolean, disconnect: () -> Unit, title: String? = null) {
     Column(modifier = Modifier.fillMaxWidth().background(bgSecondary)) {
-        androidx.compose.material3.HorizontalDivider(color = border, thickness = 1.dp)
+        HorizontalDivider(color = border, thickness = 1.dp)
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -702,14 +851,14 @@ fun PiHeader(status: ConnectionStatus, busy: Boolean, disconnect: () -> Unit, ti
 
 @Composable
 fun PiFooter(
-    sessions: List<com.piremote.RemoteSession>,
+    sessions: List<RemoteSession>,
     selectedSession: String,
     messageCount: Int,
     compacting: Boolean = false,
     clientCount: Int = 0
 ) {
     Column(modifier = Modifier.fillMaxWidth().background(footerBg)) {
-        androidx.compose.material3.HorizontalDivider(color = border, thickness = 1.dp)
+        HorizontalDivider(color = border, thickness = 1.dp)
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             val active = sessions.find { it.id == selectedSession }
             Text(
@@ -723,7 +872,7 @@ fun PiFooter(
             Text("messages: $messageCount", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
         }
         if (compacting) {
-            androidx.compose.material3.HorizontalDivider(color = borderMuted)
+            HorizontalDivider(color = borderMuted)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp)) {
                 CircularProgressIndicator(modifier = Modifier.size(10.dp), color = thinkingBorder, strokeWidth = 1.5.dp)
@@ -745,7 +894,7 @@ fun PiFooter(
  * Terminal-styled chips showing tool usage counts.
  */
 @Composable
-fun TurnSummaryPanel(summary: com.piremote.PiWebSocket.TurnSummary) {
+fun TurnSummaryPanel(summary: PiWebSocket.TurnSummary) {
     PiRoundedBox(
         header = "Last turn (${summary.totalCalls} calls)",
         borderColor = borderMuted,
@@ -790,7 +939,7 @@ fun PiTurnToolChip(name: String, count: Int) {
 // ── Pi Terminal Session Selector ───────────────────────────────────────
 
 @Composable
-fun PiSessionSelector(sessions: List<com.piremote.RemoteSession>, selected: String, onSelect: (String) -> Unit) {
+fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect: (String) -> Unit) {
     if (sessions.size < 2) {
         sessions.firstOrNull()?.let { sess ->
             val isActive = sess.status == "busy"
@@ -848,16 +997,16 @@ fun PiSessionSelector(sessions: List<com.piremote.RemoteSession>, selected: Stri
 fun ChatScreen(
     vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>,
     assist: String, status: ConnectionStatus, busy: Boolean,
-    sessions: List<com.piremote.RemoteSession> = emptyList(),
+    sessions: List<RemoteSession> = emptyList(),
     selectedSession: String = "",
-    commands: List<com.piremote.RemoteCommand> = emptyList(),
+    commands: List<RemoteCommand> = emptyList(),
     statuses: Map<String, String> = emptyMap(),
     widgets: Map<String, List<String>> = emptyMap(),
     compacting: Boolean = false,
-    notifyBanners: List<com.piremote.BannerMessage> = emptyList(),
+    notifyBanners: List<BannerMessage> = emptyList(),
     uiTitle: String? = null,
     clientCount: Int = 0,
-    turnSummary: com.piremote.PiWebSocket.TurnSummary? = null
+    turnSummary: PiWebSocket.TurnSummary? = null
 ) {
     val ls = rememberLazyListState()
     val cnt = messages.size + if (assist.isNotBlank()) 2 else 0
@@ -897,10 +1046,10 @@ fun ChatScreen(
         notifyBanners.forEach { NotifyBanner(it.content, it.type) }
 
         // Chat Messages Area — flat scrollback, no card padding.
-        androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.weight(1f)) {
+        BoxWithConstraints(modifier = Modifier.weight(1f)) {
             // Report our content width in monospace columns so the host re-renders
             // extension components to fit the phone. piMono advance ≈ 0.6em.
-            val density = androidx.compose.ui.platform.LocalDensity.current
+            val density = LocalDensity.current
             val cols = remember(maxWidth) {
                 with(density) {
                     val charDp = 12.sp.toDp().value * 0.6f
@@ -928,7 +1077,7 @@ fun ChatScreen(
                 // for the brief pure-thinking window before text_start fires, when
                 // the bubble doesn't exist yet or is still empty.
                 val bubbleHasLiveText = messages.lastOrNull()?.let {
-                    it.type == com.piremote.MessageToolType.Streaming && it.content.isNotBlank()
+                    it.type == MessageToolType.Streaming && it.content.isNotBlank()
                 } == true
                 if (assist.isNotBlank() && !bubbleHasLiveText) {
                     item(key = "streaming") {
@@ -996,19 +1145,19 @@ private val piSpinnerFrames = listOf("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "
 @Composable
 fun PiWorkingStatus(busyStartedAt: Long, onInterrupt: () -> Unit) {
     // 80ms tick for the spinner — exact match for pi's DEFAULT_INTERVAL_MS.
-    var frameIdx by remember { mutableStateOf(0) }
-    LaunchedEffect(Unit) {
+    val frameIdx by produceState(initialValue = 0) {
+        var idx = 0
         while (true) {
             kotlinx.coroutines.delay(80)
-            frameIdx = (frameIdx + 1) % piSpinnerFrames.size
+            value = idx
+            idx = (idx + 1) % piSpinnerFrames.size
         }
     }
-    // 1s tick for elapsed-seconds counter.
-    var elapsed by remember { mutableStateOf(0L) }
-    LaunchedEffect(busyStartedAt) {
+    // Elapsed-seconds counter — restarts when busyStartedAt changes.
+    val elapsed by produceState(initialValue = 0L, key1 = busyStartedAt) {
         while (true) {
-            elapsed = ((System.currentTimeMillis() - busyStartedAt) / 1000).coerceAtLeast(0)
             kotlinx.coroutines.delay(500)
+            value = ((System.currentTimeMillis() - busyStartedAt) / 1000).coerceAtLeast(0)
         }
     }
 
@@ -1030,8 +1179,14 @@ fun PiWorkingStatus(busyStartedAt: Long, onInterrupt: () -> Unit) {
 /** Blinking block cursor for streaming text. */
 @Composable
 fun PiBlinkBlock(color: Color = accent) {
-    var on by remember { mutableStateOf(true) }
-    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(500); on = !on } }
+    val on by produceState(initialValue = true) {
+        var state = true
+        while (true) {
+            kotlinx.coroutines.delay(500)
+            state = !state
+            value = state
+        }
+    }
     Text(
         if (on) "▌" else " ",
         color = color, fontFamily = piMono, fontSize = 13.sp
@@ -1051,7 +1206,7 @@ fun PiTerminalInput(
     setSteerMode: (Boolean) -> Unit,
     followUpMode: Boolean,
     setFollowUpMode: (Boolean) -> Unit,
-    commands: List<com.piremote.RemoteCommand> = emptyList()
+    commands: List<RemoteCommand> = emptyList()
 ) {
     // ── Slash command autocomplete row ─────────────────────────────
     val isSlash = input.trimStart().startsWith("/") && !busy
@@ -1092,7 +1247,7 @@ fun PiTerminalInput(
         ) {
         PiBlinkSigil(sigil = ">", color = cursorColor, active = input.isEmpty())
         Spacer(Modifier.width(4.dp))
-        androidx.compose.material3.TextField(
+        TextField(
             value = input,
             onValueChange = { vm.setInputText(it) },
             placeholder = {
@@ -1100,7 +1255,7 @@ fun PiTerminalInput(
             },
             modifier = Modifier.fillMaxWidth(),
             maxLines = 4, singleLine = false,
-            colors = androidx.compose.material3.TextFieldDefaults.colors(
+            colors = TextFieldDefaults.colors(
                 focusedContainerColor = bg, unfocusedContainerColor = bg,
                 focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
                 focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
@@ -1108,9 +1263,9 @@ fun PiTerminalInput(
                 cursorColor = cursorColor
             ),
             textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 13.sp),
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = ImeAction.Send),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
             enabled = !busy || steerMode || followUpMode,
-            keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSend = {
+            keyboardActions = KeyboardActions(onSend = {
                 when {
                     steerMode -> { vm.sendSteer(); setSteerMode(false) }
                     followUpMode -> { vm.sendFollowUp(); setFollowUpMode(false) }
@@ -1209,10 +1364,14 @@ fun PiStartupHeader() {
 /** Blinking `>` prompt sigil. Stops blinking once the user has typed. */
 @Composable
 fun PiBlinkSigil(sigil: String, color: Color, active: Boolean) {
-    var on by remember { mutableStateOf(true) }
-    LaunchedEffect(active) {
-        if (active) while (true) { kotlinx.coroutines.delay(550); on = !on }
-        else on = true
+    val on by produceState(initialValue = true, key1 = active) {
+        if (!active) return@produceState
+        var state = true
+        while (true) {
+            kotlinx.coroutines.delay(550)
+            state = !state
+            value = state
+        }
     }
     Text(
         sigil,
@@ -1240,9 +1399,11 @@ fun PiMessageBubble(msg: ChatMessage) {
  *  Reuses [parseAnsiLine]/[buildAnsiText] from TerminalView. */
 @Composable
 fun AnsiBlock(lines: List<String>, modifier: Modifier = Modifier) {
+    // Memoize parsed ANSI segments — parseAnsiLine does substringing and SGR
+    // decoding; caching avoids repeated work on every recomposition.
+    val parsed = remember(lines) { lines.map { line -> line to parseAnsiLine(line) } }
     Column(modifier = modifier) {
-        lines.forEach { line ->
-            val segments = parseAnsiLine(line)
+        parsed.forEach { (_, segments) ->
             if (segments.all { it.first.isEmpty() }) {
                 Spacer(Modifier.height(6.dp))
             } else {
@@ -1356,15 +1517,15 @@ fun PiToolMessage(msg: ChatMessage) {
     val clipboard = LocalContext.current.getSystemService(ClipboardManager::class.java)
     var copied by remember { mutableStateOf(false) }
     var expanded by remember { mutableStateOf(false) }
-    val isCode = CodeUtils.isCodeContent(msg.content)
-    val lineCount = CodeUtils.countLines(msg.content)
+    val isCode = isCodeContent(msg.content)
+    val lineCount = countLines(msg.content)
 
     val dotColor = when {
         msg.isError -> error
         else -> toolBorder
     }
-    val argText = if (msg.toolArgs.isNotBlank()) parseToolArgs(msg.toolArgs) else ""
-    val firstLine = msg.content.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+    val argText = remember(msg.toolArgs) { if (msg.toolArgs.isNotBlank()) parseToolArgs(msg.toolArgs) else "" }
+    val firstLine = remember(msg.content) { msg.content.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty() }
 
     LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1500); copied = false } }
 
@@ -1397,11 +1558,11 @@ fun PiToolMessage(msg: ChatMessage) {
         // (which is just "Successfully replaced N block(s)"). Render the
         // structured diff when expanded; the collapsed preview stays as the
         // result string so it still shows "Successfully replaced 1 block(s)".
-        val tn = msg.toolName.lowercase()
+        val tn = remember(msg.toolName) { msg.toolName.lowercase() }
         val isEditLike = tn == "edit" || tn == "multiedit" || tn == "multi_edit"
         val isWrite = tn == "write"
-        val hunks = if (isEditLike) parseEdits(msg.toolArgs) else emptyList()
-        val writeContent = if (isWrite) parseWriteContent(msg.toolArgs) else null
+        val hunks = remember(msg.toolArgs, isEditLike) { if (isEditLike) parseEdits(msg.toolArgs) else emptyList() }
+        val writeContent = remember(msg.toolArgs, isWrite) { if (isWrite) parseWriteContent(msg.toolArgs) else null }
 
         // ⎿ first-line excerpt (collapsed) OR full body (expanded)
         if (msg.content.isNotBlank() || hunks.isNotEmpty() || writeContent != null) {
@@ -1440,12 +1601,12 @@ fun PiToolMessage(msg: ChatMessage) {
  */
 fun parseEdits(argsJson: String): List<Pair<String, String>> {
     if (argsJson.isBlank()) return emptyList()
-    val m = try { com.piremote.JP.p(argsJson) } catch (_: Throwable) { null } ?: return emptyList()
+    val m = try { JP.p(argsJson) } catch (_: Throwable) { null } ?: return emptyList()
     val arr = m["edits"] as? List<*> ?: return emptyList()
     return arr.mapNotNull { e ->
         if (e !is Map<*, *>) return@mapNotNull null
-        val oldT = com.piremote.Js.gets(e, "oldText") ?: com.piremote.Js.gets(e, "old_str") ?: return@mapNotNull null
-        val newT = com.piremote.Js.gets(e, "newText") ?: com.piremote.Js.gets(e, "new_str") ?: ""
+        val oldT = Js.gets(e, "oldText") ?: Js.gets(e, "old_str") ?: return@mapNotNull null
+        val newT = Js.gets(e, "newText") ?: Js.gets(e, "new_str") ?: ""
         oldT to newT
     }
 }
@@ -1456,8 +1617,8 @@ fun parseEdits(argsJson: String): List<Pair<String, String>> {
  */
 fun parseWriteContent(argsJson: String): String? {
     if (argsJson.isBlank()) return null
-    val m = try { com.piremote.JP.p(argsJson) } catch (_: Throwable) { null } ?: return null
-    return com.piremote.Js.gets(m, "content")
+    val m = try { JP.p(argsJson) } catch (_: Throwable) { null } ?: return null
+    return Js.gets(m, "content")
 }
 
 /** Code block with line numbers */
@@ -1485,11 +1646,11 @@ fun PiAnnotatedLine(line: String) {
     val isBlank = line.isBlank()
     val isKeyword = try {
         val trimmed = line.trimStart()
-        setOf("class", "interface", "object", "enum", "sealed", "data", "abstract", "val", "var", "fun", "package", "import", "override", "constructor", "return", "if", "else", "when", "for", "while", "do", "is", "in", "as", "by", "companion", "suspend", "where", "public", "private", "protected", "static", "fn", "let", "mut", "pub", "use", "const").any { kw ->
+        KEYWORDS.any { kw ->
             trimmed.startsWith(kw) && (trimmed.length == kw.length || !Character.isLetterOrDigit(trimmed[kw.length]))
         }
     } catch (_: Exception) { false }
-    val isNumber = line.trimStart().matches(Regex("[0-9]+\\.?[0-9]*"))
+    val isNumber = NUMBER_RE.matches(line.trimStart())
 
     val color = when {
         isComment -> codeComment
@@ -1507,11 +1668,11 @@ fun PiAnnotatedLine(line: String) {
 
 fun parseToolArgs(json: String): String {
     return try {
-        val j = com.piremote.JP.p(json)
+        val j = JP.p(json)
         j?.let { m ->
-            val path = com.piremote.Js.gets(m, "path") ?: com.piremote.Js.gets(m, "file") ?: ""
-            val cmd = com.piremote.Js.gets(m, "cmd") ?: com.piremote.Js.gets(m, "command") ?: ""
-            val name = com.piremote.Js.gets(m, "name") ?: ""
+            val path = Js.gets(m, "path") ?: Js.gets(m, "file") ?: ""
+            val cmd = Js.gets(m, "cmd") ?: Js.gets(m, "command") ?: ""
+            val name = Js.gets(m, "name") ?: ""
             if (path.isNotBlank()) path
             else if (cmd.isNotBlank()) cmd
             else if (name.isNotBlank()) name
@@ -1536,3 +1697,14 @@ fun sessionTime(ts: Long): String {
     }
     return fullTimeFormat.format(java.util.Date(ts))
 }
+
+// ── Code annotation constants (pre-compiled, shared across all calls) ──
+
+private val KEYWORDS = setOf(
+    "class", "interface", "object", "enum", "sealed", "data", "abstract",
+    "val", "var", "fun", "package", "import", "override", "constructor",
+    "return", "if", "else", "when", "for", "while", "do", "is", "in",
+    "as", "by", "companion", "suspend", "where", "public", "private",
+    "protected", "static", "fn", "let", "mut", "pub", "use", "const"
+)
+private val NUMBER_RE = Regex("^[0-9]+\\.?[0-9]*$")

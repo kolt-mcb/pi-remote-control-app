@@ -1,5 +1,12 @@
 # Pi Remote Control — R8 rules for release builds.
 #
+# KEEP: Custom data classes used in JSON (de)serialization. The hand-rolled
+# JP parser accesses map keys by string — no reflection needed — but keeping
+# these classes avoids confusion and protects against accidental renaming.
+-keepclassmembers class com.piremote.** { *; }
+-keep class com.piremote.** { *; }
+-keep class com.piremote.db.** { *; }
+#
 # The `applicationId com.piremote` line that used to be here was Gradle DSL
 # accidentally pasted into a ProGuard file — R8 doesn't parse it and the
 # whole rules file fails to compile, which kills minifyReleaseWithR8.

@@ -79,22 +79,3 @@ val footerText: Color get() = ThemeManager.current.footerText
 
 // ▸ Legacy alias (used by a few places)
 val errorColor: Color get() = error
-
-// ▸ Code detection helpers (unchanged from original)
-object CodeUtils {
-    fun isCodeContent(content: String): Boolean {
-        val patterns = setOf(
-            "package ", "import ", "class ", "interface ", "fun ",
-            "private ", "protected ", "public ",
-            "abstract ", "override ", "sealed ", "data ",
-            "val ", "var ", "companion ", "object ",
-            "await ",
-            ".kt:", ".java:", ".ts:", ".js:", ".xml:", "*.py",
-            "//", "function ", "const ", "let ", "module",
-            "file://", "src/main",
-            "#if", "#else", "return"
-        )
-        return patterns.any { content.contains(it) }
-    }
-    fun countLines(content: String): Int = content.split("\n").size
-}

@@ -63,9 +63,9 @@ fun SelectDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String)
                 }
                 HorizontalDivider(color = borderMuted)
 
-                if (!req.message.isNullOrBlank()) {
+                req.message?.takeIf { it.isNotBlank() }?.let { msg ->
                     Text(
-                        buildAnsiText(parseAnsiLine(req.message!!), textSecondary),
+                        buildAnsiText(parseAnsiLine(msg), textSecondary),
                         fontFamily = piMono,
                         fontSize = 12.sp,
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
@@ -146,9 +146,9 @@ fun InputDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String) 
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (req.message.isNullOrBlank().not()) {
+                req.message?.takeIf { it.isNotBlank() }?.let { msg ->
                     Box(modifier = Modifier.border(BorderStroke(1.dp, borderMuted), RoundedCornerShape(0.dp)).padding(6.dp)) {
-                        Text(buildAnsiText(parseAnsiLine(req.message!!), textSecondary), fontFamily = piMono, fontSize = 12.sp)
+                        Text(buildAnsiText(parseAnsiLine(msg), textSecondary), fontFamily = piMono, fontSize = 12.sp)
                     }
                 }
                 Box(modifier = Modifier.border(BorderStroke(1.dp, accent), RoundedCornerShape(0.dp)).padding(8.dp)) {
@@ -192,9 +192,13 @@ fun InputDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String) 
 fun NotifyBanner(msg: String, type: String) {
     val icon = when (type) { "error" -> "✕" ; "warning" -> "⚠" ; else -> "i" }
     val color = when (type) { "error" -> error ; "warning" -> warning ; else -> accent }
-    Surface(color = color.copy(alpha = 0.06f), tonalElevation = 0.dp,
-        border = BorderStroke(0.5.dp, color.copy(alpha = 0.25f)),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp)) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .background(color.copy(alpha = 0.06f), shape = RoundedCornerShape(0.dp))
+            .border(0.5.dp, color.copy(alpha = 0.25f), RoundedCornerShape(0.dp))
+    ) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)) {
             Text(icon, color = color, fontFamily = piMono, fontSize = 12.sp)

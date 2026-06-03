@@ -10,6 +10,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,9 +25,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +54,12 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
     val ctx = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
+
+    // Create the scanner once and reuse it — creating a new one per frame
+    // (as the old code did) is wasteful and leaks native resources.
+    val scanner = remember { BarcodeScanning.getClient(BarcodeScannerOptions.Builder()
+        .setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()) }
+    DisposableEffect(scanner) { onDispose { scanner.close() } }
 
     var hasCamera by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
@@ -89,7 +98,15 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
                             val pr = Preview.Builder().build().also { p -> p.setSurfaceProvider(preview.surfaceProvider) }
                             val an = ImageAnalysis.Builder()
                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                .build().also { a -> a.setAnalyzer(Executors.newSingleThreadExecutor()) { proxy -> scan(proxy, ::processQr) } }
+                                .build().also { a -> a.setAnalyzer(Executors.newSingleThreadExecutor()) { proxy ->
+                                    proxy.image?.let { mediaImg ->
+                                        val img = InputImage.fromMediaImage(mediaImg, proxy.imageInfo.rotationDegrees)
+                                        scanner.process(img).addOnSuccessListener { codes ->
+                                            for (c in codes) c.rawValue?.let { processQr(it) }
+                                        }
+                                    }
+                                    proxy.close()
+                                } }
                             val sel = CameraSelector.Builder().requireLensFacing(CameraSelector.LENS_FACING_BACK).build()
                             provider.bindToLifecycle(lifecycle, sel, pr, an)
                         }
@@ -97,6 +114,16 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
                     },
                     modifier = Modifier.fillMaxSize()
                 )
+                // Properly unbind camera resources when this composable leaves
+                // the composition (e.g., user taps back / QR scan succeeds).
+                DisposableEffect(Unit) {
+                    onDispose {
+                        scope.launch {
+                            val provider = ProcessCameraProvider.getInstance(ctx).get()
+                            provider.unbindAll()
+                        }
+                    }
+                }
             }
         } else {
             Box(modifier = Modifier.weight(1f)) {
@@ -114,7 +141,7 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
         // Manual URL entry
         Column(modifier = Modifier.padding(16.dp)) {
             Text("Or enter URL manually", color = Color.Gray, fontSize = 12.sp)
-            var url by androidx.compose.runtime.remember { mutableStateOf(initialUrl) }
+            var url by remember { mutableStateOf(initialUrl) }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = url,
@@ -122,10 +149,10 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
                     label = { Text("ws://IP:port") },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
-                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                    colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = Color.Black.copy(alpha = 0.5f),
                         unfocusedContainerColor = Color.Black.copy(alpha = 0.3f)),
-                    textStyle = androidx.compose.ui.text.TextStyle.Default.copy(color = Color.White),
+                    textStyle = TextStyle.Default.copy(color = Color.White),
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(onClick = { if (url.isNotBlank()) onConnected(url) }, enabled = url.isNotBlank()) {
@@ -136,15 +163,3 @@ fun QrScanner(initialUrl: String, onConnected: (String) -> Unit, onClose: () -> 
     }
 }
 
-private fun scan(proxy: ImageProxy, onQr: (String) -> Unit) {
-    proxy.image ?: return
-    val img = InputImage.fromMediaImage(proxy.image!!, proxy.imageInfo.rotationDegrees)
-    val scanner = BarcodeScanning.getClient(BarcodeScannerOptions.Builder()
-        .setBarcodeFormats(Barcode.FORMAT_QR_CODE).build())
-    scanner.process(img).addOnSuccessListener { codes ->
-        for (c in codes) {
-            c.rawValue?.let { onQr(it) }
-        }
-    }
-    proxy.close()
-}

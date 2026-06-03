@@ -3,6 +3,7 @@ package com.piremote
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
@@ -11,8 +12,11 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.util.concurrent.TimeUnit
+import java.util.Locale
 
 private const val TAG = "PiUpdater"
+private val VERSION_CODE_RE = Regex("""versionCode:\s*(\d+)""")
+private val VERSION_NAME_RE = Regex("""versionName:\s*(\S+)""")
 
 // Default release endpoint. The repo currently lives at this URL; if it ever
 // moves, override via the constructor at call-site. The release tag "latest"
@@ -35,16 +39,38 @@ data class LatestRelease(
 /**
  * Read-only — checks GitHub Releases for a newer build, downloads the APK,
  * and fires the OS package installer. Doesn't auto-check on launch; the
- * UI calls [checkAndDownload] explicitly so we don't burn bandwidth (each
+ * UI calls [fetchLatest] explicitly so we don't burn bandwidth (each
  * download is ~40 MB).
+ *
+ * @param ctx Application context for file I/O.
+ * @param releaseApiUrl GitHub Releases API endpoint.
+ * @param authToken Optional GitHub personal access token to raise API rate
+ *   limits from 60/hr (unauthenticated) to 5,000/hr (authenticated).
  */
 class UpdateChecker(
     private val ctx: Context,
     private val releaseApiUrl: String = DEFAULT_RELEASE_API,
+    authToken: String? = null,
 ) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
+        .apply {
+            if (!authToken.isNullOrEmpty()) {
+                // Use Bearer token — more widely supported than the older
+                // "token <hex>" scheme. Token should be read-only.
+                val trimmed = authToken.trim()
+                if (trimmed.isNotBlank() && (trimmed.lowercase(Locale.ROOT).startsWith("ghp_") ||
+                        trimmed.lowercase(Locale.ROOT).startsWith("github_pat_"))) {
+                    addInterceptor { chain ->
+                        val request = chain.request().newBuilder()
+                            .header("Authorization", "Bearer $trimmed")
+                            .build()
+                        chain.proceed(request)
+                    }
+                }
+            }
+        }
         .build()
 
     /** Running app's installed versionCode. Pulled at runtime from
@@ -54,7 +80,7 @@ class UpdateChecker(
         @Suppress("DEPRECATION")
         val pi = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
         // longVersionCode is API 28+; minSdk is 26 so we still need the cast.
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
             pi.longVersionCode
         else pi.versionCode.toLong()
     } catch (e: Exception) {
@@ -90,8 +116,8 @@ class UpdateChecker(
                 // versionCode + versionName come from lines the CI workflow
                 // stamps into the release body. Format: `versionCode: NN` /
                 // `versionName: <shortsha>`. Tolerate whitespace.
-                val codeMatch = Regex("""versionCode:\s*(\d+)""").find(releaseBody)
-                val nameMatch = Regex("""versionName:\s*(\S+)""").find(releaseBody)
+                val codeMatch = VERSION_CODE_RE.find(releaseBody)
+                val nameMatch = VERSION_NAME_RE.find(releaseBody)
                 if (codeMatch == null) {
                     Log.w(TAG, "release body missing versionCode line")
                     return@use null

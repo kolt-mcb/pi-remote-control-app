@@ -17,7 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
@@ -59,19 +59,43 @@ data class ChatMessage(
     val timestamp: Long = System.currentTimeMillis()
 )
 
+/**
+ * Single source of truth for the UI.
+ *
+ * Every `collectAsState()` lives here — the Activity collects exactly zero
+ * flows itself. This keeps the Compose body readable ("readability counts")
+ * and avoids the Activity reaching past the ViewModel into the raw
+ * PiWebSocket ("namespaces are one honking great idea").
+ *
+ * The `*Flow` properties are passed in as raw flows; callers use
+ * `collectAsState()` on whichever property they consume. Because each
+ * composable reads only the properties it needs, the compiler can still
+ * skip recomposing subtrees that don't use the changed property. The
+ * consolidation here is purely about *where* the collection happens —
+ * the ViewModel, not the Activity.
+ */
 class ChatUIState(
     val serverUrl: MutableStateFlow<String>,
+    val inputText: MutableStateFlow<String>,
     val messages: StateFlow<List<ChatMessage>>,
     val streamingText: StateFlow<String>,
     val status: StateFlow<ConnectionStatus>,
     val busy: StateFlow<Boolean>,
-    val inputText: MutableStateFlow<String>,
     val urlHistory: StateFlow<Set<String>>,
     val selectedSession: StateFlow<String>,
-    val notifyBanners: StateFlow<List<com.piremote.BannerMessage>>,
+    // ── Global (non-per-agent) flows forwarded from PiWebSocket ──
+    val sessions: StateFlow<List<RemoteSession>>,
+    val commands: StateFlow<List<RemoteCommand>>,
+    val uiRequests: StateFlow<List<ExtensionUIRequest>>,
+    val statuses: StateFlow<Map<String, String>>,
+    val widgets: StateFlow<Map<String, List<String>>>,
+    val compacting: StateFlow<Boolean>,
+    val notifyBanners: StateFlow<List<BannerMessage>>,
     val uiTitle: StateFlow<String?>,
     val clientCount: StateFlow<Int>,
-    val turnSummary: StateFlow<com.piremote.PiWebSocket.TurnSummary?>,
+    val turnSummary: StateFlow<PiWebSocket.TurnSummary?>,
+    val savedSessions: StateFlow<List<SavedSession>>,
+    val renderFrame: StateFlow<RenderFrame?>,
 )
 
 class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : ViewModel() {
@@ -93,8 +117,27 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     fun showChatScreen() { _connectedScreen.value = ConnectedScreen.Chat }
 
     val st = ChatUIState(
-        _url, _ws.messageFlow, _ws.assistingTextFlow, _ws.statusFlow, _ws.busyFlow, _inp, _urlHistory, _selectedSession,
-        _ws.notifyBannerFlow, _ws.uiTitleFlow, _ws.clientCountFlow, _ws.turnSummaryFlow
+        serverUrl = _url,
+        inputText = _inp,
+        messages = _ws.messageFlow,
+        streamingText = _ws.assistingTextFlow,
+        status = _ws.statusFlow,
+        busy = _ws.busyFlow,
+        urlHistory = _urlHistory,
+        selectedSession = _selectedSession,
+        // Global flows — forwarded so the Activity never touches PiWebSocket directly.
+        sessions = _ws.sessionListFlow,
+        commands = _ws.commandListFlow,
+        uiRequests = _ws.uiRequestFlow,
+        statuses = _ws.statusesFlow,
+        widgets = _ws.widgetsFlow,
+        compacting = _ws.compactingFlow,
+        notifyBanners = _ws.notifyBannerFlow,
+        uiTitle = _ws.uiTitleFlow,
+        clientCount = _ws.clientCountFlow,
+        turnSummary = _ws.turnSummaryFlow,
+        savedSessions = _ws.savedSessionsFlow,
+        renderFrame = _ws.renderFrameFlow,
     )
 
     fun setSelectedSession(id: String) {
@@ -106,20 +149,20 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
 
     fun setServerUrl(u: String) { _url.value = u }
     fun setInputText(t: String) { _inp.value = t }
-    fun loadUrlHistory() {
+    /** Call from a coroutine scope — never call from main thread directly. */
+    suspend fun loadUrlHistory() {
         try {
-            runBlocking {
-                val prefs = _ctx.dataStore.data.first()
-                _urlHistory.value = prefs[KEY_URL_HISTORY] ?: emptySet()
-            }
+            val prefs = _ctx.dataStore.data.first()
+            _urlHistory.value = prefs[KEY_URL_HISTORY] ?: emptySet()
         } catch (_: Throwable) {}
     }
 
     fun connect() {
-        val u = _url.value.ifBlank { "ws://192.168.1.100:8765" }
+        val u = _url.value.ifBlank { "" }
         _url.value = u
-        try {
-            runBlocking {
+        // Persist URL & history in background to avoid blocking the UI thread.
+        viewModelScope.launch {
+            try {
                 val prefs = _ctx.dataStore.data.first()
                 val history = (prefs[KEY_URL_HISTORY] ?: emptySet()).toList().toMutableList()
                 history.remove(u); history.add(0, u)
@@ -127,8 +170,8 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                 val finalHistory = history.toSet()
                 _ctx.dataStore.edit { it[KEY_URL] = u; it[KEY_URL_HISTORY] = finalHistory }
                 _urlHistory.value = finalHistory
-            }
-        } catch (_: Throwable) {}
+            } catch (_: Throwable) {}
+        }
 
         // Cancel any observers from a prior connect(). Without this, every
         // reconnect stacked another set of persistence/session/FGS collectors
@@ -137,9 +180,11 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         val scope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob())
         connectionScope = scope
 
-        // Load saved messages from DB
+        // Load saved messages from DB (IO thread for Room)
         scope.launch {
-            val saved = _dao.getAllByServerUrl(u).distinctBy { it.msgId }
+            val saved = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                _dao.getAllByServerUrl(u).distinctBy { it.msgId }
+            }
             val rebuilt = saved.map { e ->
                 val t = when(e.type) {
                     "User" -> MessageToolType.User
@@ -286,6 +331,9 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     /** Refresh the saved-session list. The browser screen calls this on
      *  entry; the response shows up in [PiWebSocket.savedSessionsFlow]. */
     fun refreshSavedSessions() { _ws.sendGetSavedSessions() }
+
+    /** Send /quit targeted at a specific peer agent to close that session. */
+    fun closeSession(id: String) { _ws.sendSlashCommand("quit", "", id) }
     class Factory(private val ws: PiWebSocket, private val ctx: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(c: Class<T>): T = ChatViewModel(ws, ctx) as T

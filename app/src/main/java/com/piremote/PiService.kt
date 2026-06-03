@@ -7,7 +7,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 private const val CHANNEL_ID = "pi_remote_connection"
@@ -44,8 +46,10 @@ class PiService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         } catch (e: Exception) {
             // Android 14+ FGS quotas (e.g. dataSync 6h/24h) can deny startForeground.
-            // Degrade gracefully: stop the service rather than crashing the app.
-            android.util.Log.w("PiService", "startForeground denied: ${e.message}")
+            // Mark quota as exhausted so the caller stops retrying, preventing
+            // a start-fail-destroy loop that burns CPU while the WS stays alive.
+            Log.w("PiService", "startForeground denied: ${e.message}")
+            markQuotaFailed()
             stopSelf()
             return START_NOT_STICKY
         }
@@ -104,22 +108,40 @@ class PiService : Service() {
         private const val EXTRA_BUSY = "busy"
         private const val EXTRA_MSG_COUNT = "msg_count"
 
-        /** Start or update the foreground service */
+        // When startForeground throws (Android 14+ FGS quota exhaustion),
+        // we stop trying for the rest of this connection. Without this, the
+        // busy-flow collector in ChatViewModel keeps calling start() →
+        // startForeground throws → stopSelf → repeat, burning CPU.
+        @Volatile private var quotaFailed = false
+
+        /** Start or update the foreground service. */
         fun start(context: Context, serverHost: String, busy: Boolean = false, msgCount: Int = 0) {
+            if (quotaFailed) return  // don't retry after quota exhaustion
             val intent = Intent(context, PiService::class.java).apply {
                 putExtra(EXTRA_HOST, serverHost)
                 putExtra(EXTRA_BUSY, busy)
                 putExtra(EXTRA_MSG_COUNT, msgCount)
             }
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                // startForegroundService itself can fail (e.g. missing permission)
+                Log.w("PiService", "start denied: ${e.message}")
+                quotaFailed = true
             }
         }
 
-        /** Stop the foreground service */
+        /** Called by the service when startForeground throws inside onStartCommand. */
+        internal fun markQuotaFailed() { quotaFailed = true }
+
+        /** Stop the foreground service. Resets the quota flag so the next
+         *  connect cycle gets a fresh try (the 24h quota window may have moved). */
         fun stop(context: Context) {
+            quotaFailed = false
             context.stopService(Intent(context, PiService::class.java))
         }
 

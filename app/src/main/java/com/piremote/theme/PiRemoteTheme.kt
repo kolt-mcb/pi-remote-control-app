@@ -84,36 +84,9 @@ data class PiRemoteTheme(
     val footerText: Color = Color(0xFF636C76),
 ) {
     companion object {
-        // ── Default dark palette (matches Pi db) ───────────────
-        val defaultDark = PiRemoteTheme(
-            colorScheme = ColorScheme.DARK,
-            bg = Color(0xFF0D1117), bgSecondary = Color(0xFF161B22),
-            bgTertiary = Color(0xFF21262D), footerBg = Color(0xFF010409),
-            border = Color(0xFF30363D), borderAccent = Color(0xFF58A6FF),
-            borderMuted = Color(0xFF21262D),
-            textPrimary = Color(0xFFF0F6FC), textSecondary = Color(0xFF8B949E),
-            textMuted = Color(0xFF636C76),
-            accent = Color(0xFF58A6FF), success = Color(0xFF3FB950),
-            error = Color(0xFFF85149), warning = Color(0xFFD29922),
-            userBubbleBg = Color(0xFF1C2333), userBubbleText = Color(0xFFF0F6FC),
-            assistantText = Color(0xFFE6EDF3), selectedBg = Color(0xFF264F78),
-            toolBorder = Color(0xFF3FB950), toolPending = Color(0xFF2D333B),
-            toolErrorBg = Color(0xFF2D1B1B), toolSuccessBg = Color(0xFF1B2D1B),
-            toolTitle = Color(0xFF58A6FF),
-            thinkingColor = Color(0xFFD2A8FF), thinkingBorder = Color(0xFFD2A8FF),
-            thinkingLow = Color(0xFF58A6FF), thinkingMedium = Color(0xFFD2A8FF),
-            thinkingHigh = Color(0xFFFF7B72),
-            codeKeyword = Color(0xFFFF7B72), codeString = Color(0xFFA5D6FF),
-            codeComment = Color(0xFF6E7681), codeFunction = Color(0xFFD2A8FF),
-            codeNumber = Color(0xFF79C0FF), codeType = Color(0xFF7EE787),
-            codeOperator = Color(0xFF79C0FF), codePunctuation = Color(0xFF636C76),
-            mdHeading = Color(0xFFF0C674), mdLink = Color(0xFF81A2BE),
-            mdLinkUrl = Color(0xFF6E7681), mdCode = Color(0xFF58A6FF),
-            mdCodeBlock = Color(0xFF7EE787), mdCodeBlockBorder = Color(0xFF6E7681),
-            mdQuote = Color(0xFF8B949E), mdQuoteBorder = Color(0xFF6E7681),
-            mdListBullet = Color(0xFF58A6FF),
-            footerText = Color(0xFF636C76),
-        )
+        // ── Default dark palette ───────────────
+        // Uses all data-class defaults — the defaults ARE the dark palette.
+        val defaultDark = PiRemoteTheme()
 
         // ── Default light palette (matches Pi light.json) ────────
         val defaultLight = PiRemoteTheme(

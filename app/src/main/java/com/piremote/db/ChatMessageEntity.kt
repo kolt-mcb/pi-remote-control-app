@@ -9,10 +9,10 @@ import androidx.room.PrimaryKey
 // content overwrites the earlier row instead of being dropped or duplicated.
 @Entity(
     tableName = "chat_messages",
+    primaryKeys = ["url", "msgId"],
     indices = [Index(value = ["url", "msgId"], unique = true)]
 )
 data class ChatMessageEntity(
-    @PrimaryKey(autoGenerate = true) val rowId: Long = 0,
     val msgId: String,
     val url: String,
     val seq: Int,

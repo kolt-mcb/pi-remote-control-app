@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -30,12 +32,23 @@ private val italicStarRe = Regex("""(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)""")
 private val italicUndersRe = Regex("""(?<!_)_(?!_)([^_\n]+?)_(?!_)""")
 private val inlineCodeRe = Regex("""`([^`\n]+?)`""")
 private val linkRe = Regex("""\[([^]\n]+?)\]\(([^)\n]+?)\)""")
+// Block-level patterns — compiled once, reused per line of every message.
+private val headerRe = Regex("""^(#{1,6})\s+(.*)$""")
+private val ulRe = Regex("""^(\s*)[-*]\s+(.*)$""")
+private val olRe = Regex("""^(\s*)(\d+)\.\s+(.*)$""")
 
 // Hand-rolled markdown renderer — pi's terminal renders markdown with theme
 // colors (mdHeading/mdCode/mdQuote/...), so we mirror that look in the app.
 // Intentionally minimal: handles the patterns pi actually emits, no tables.
 
 // ── Inline tokenizer ──────────────────────────────────────────────────
+
+/** Parsed inline-markdown match — moved to top-level to avoid per-call class allocation. */
+private data class MdMatch(
+    val start: Int, val end: Int, val style: SpanStyle,
+    val inner: String,
+    val trail: String? = null, val trailStyle: SpanStyle? = null
+)
 
 /**
  * Parse inline markdown — **bold**, __bold__, *italic*, _italic_, `code`,
@@ -51,66 +64,59 @@ fun parseInlineMd(text: String, baseColor: Color, depth: Int = 0): AnnotatedStri
         return AnnotatedString(text, SpanStyle(color = baseColor))
     }
 
-    // (regex, spanStyle factory, captured-group index for visible text, optional second group for url)
-    data class Match(val start: Int, val end: Int, val style: SpanStyle, val inner: String, val trail: String? = null, val trailStyle: SpanStyle? = null)
+    // Pre-allocate style instances reused across matches
+    val boldStyle = SpanStyle(color = baseColor, fontWeight = FontWeight.Bold)
+    val italicStyle = SpanStyle(color = baseColor, fontStyle = FontStyle.Italic)
+    val plainStyle = SpanStyle(color = baseColor)
 
-    val patterns = listOf<Pair<Regex, (MatchResult) -> Match>>(
-        // Bold with ** ... **  (non-greedy, no nested **)
-        boldStarRe to { m ->
-            Match(m.range.first, m.range.last + 1,
-                SpanStyle(color = baseColor, fontWeight = FontWeight.Bold), m.groupValues[1])
-        },
-        // Bold with __ ... __
-        boldUndersRe to { m ->
-            Match(m.range.first, m.range.last + 1,
-                SpanStyle(color = baseColor, fontWeight = FontWeight.Bold), m.groupValues[1])
-        },
-        // Italic with * ... *  (single-star, must not be **)
-        italicStarRe to { m ->
-            Match(m.range.first, m.range.last + 1,
-                SpanStyle(color = baseColor, fontStyle = FontStyle.Italic), m.groupValues[1])
-        },
-        // Italic with _ ... _  (must not be __)
-        italicUndersRe to { m ->
-            Match(m.range.first, m.range.last + 1,
-                SpanStyle(color = baseColor, fontStyle = FontStyle.Italic), m.groupValues[1])
-        },
-        // Inline code `...` — uses mdCode color, no background to keep terminal feel.
-        inlineCodeRe to { m ->
-            Match(m.range.first, m.range.last + 1,
-                SpanStyle(color = mdCode, fontWeight = FontWeight.Medium), m.groupValues[1])
-        },
-        // Link [text](url)
-        linkRe to { m ->
-            Match(m.range.first, m.range.last + 1,
-                SpanStyle(color = mdLink, textDecoration = TextDecoration.Underline), m.groupValues[1],
-                trail = " (${m.groupValues[2]})",
+    val firstMatch = minMatch(
+        boldStarRe to { MdMatch(it.range.first, it.range.last + 1, boldStyle, it.groupValues[1]) },
+        boldUndersRe to { MdMatch(it.range.first, it.range.last + 1, boldStyle, it.groupValues[1]) },
+        italicStarRe to { MdMatch(it.range.first, it.range.last + 1, italicStyle, it.groupValues[1]) },
+        italicUndersRe to { MdMatch(it.range.first, it.range.last + 1, italicStyle, it.groupValues[1]) },
+        inlineCodeRe to { MdMatch(it.range.first, it.range.last + 1, SpanStyle(color = mdCode, fontWeight = FontWeight.Medium), it.groupValues[1]) },
+        linkRe to {
+            MdMatch(it.range.first, it.range.last + 1,
+                SpanStyle(color = mdLink, textDecoration = TextDecoration.Underline), it.groupValues[1],
+                trail = " (${it.groupValues[2]})",
                 trailStyle = SpanStyle(color = mdLinkUrl, fontSize = 11.sp))
-        }
+        },
+        text = text
     )
-
-    val firstMatch = patterns.mapNotNull { (re, fac) ->
-        re.find(text)?.let(fac)
-    }.minByOrNull { it.start }
 
     return buildAnnotatedString {
         if (firstMatch == null) {
-            withStyleSpan(SpanStyle(color = baseColor)) { append(text) }
+            withStyleSpan(plainStyle) { append(text) }
             return@buildAnnotatedString
         }
         if (firstMatch.start > 0) {
-            withStyleSpan(SpanStyle(color = baseColor)) { append(text.substring(0, firstMatch.start)) }
+            withStyleSpan(plainStyle) { append(text.substring(0, firstMatch.start)) }
         }
         withStyleSpan(firstMatch.style) { append(firstMatch.inner) }
-        firstMatch.trail?.let { t -> withStyleSpan(firstMatch.trailStyle ?: SpanStyle(color = baseColor)) { append(t) } }
+        firstMatch.trail?.let { t -> withStyleSpan(firstMatch.trailStyle ?: plainStyle) { append(t) } }
         if (firstMatch.end < text.length) {
             append(parseInlineMd(text.substring(firstMatch.end), baseColor, depth + 1))
         }
     }
 }
 
-private inline fun androidx.compose.ui.text.AnnotatedString.Builder.withStyleSpan(
-    style: SpanStyle, block: androidx.compose.ui.text.AnnotatedString.Builder.() -> Unit
+/** Find the earliest regex match across a set of (regex, factory) pairs. */
+private fun minMatch(
+    vararg patterns: Pair<Regex, (MatchResult) -> MdMatch>,
+    text: String
+): MdMatch? {
+    var best: MdMatch? = null
+    for ((re, fac) in patterns) {
+        re.find(text)?.let { m ->
+            val match = fac(m)
+            if (best == null || match.start < best.start) best = match
+        }
+    }
+    return best
+}
+
+private inline fun AnnotatedString.Builder.withStyleSpan(
+    style: SpanStyle, block: AnnotatedString.Builder.() -> Unit
 ) {
     val idx = pushStyle(style)
     try { block() } finally { pop(idx) }
@@ -133,7 +139,7 @@ fun PiMarkdown(
     baseSize: TextUnit = 13.sp,
     modifier: Modifier = Modifier
 ) {
-    val lines = androidx.compose.runtime.remember(text) { text.split("\n") }
+    val lines = remember(text) { text.split("\n") }
     Column(modifier = modifier) {
         var i = 0
         while (i < lines.size) {
@@ -153,7 +159,7 @@ fun PiMarkdown(
             }
 
             // Header — # / ## / ### / ...
-            val headerMatch = Regex("""^(#{1,6})\s+(.*)$""").find(line)
+            val headerMatch = headerRe.find(line)
             if (headerMatch != null) {
                 val level = headerMatch.groupValues[1].length
                 val body = headerMatch.groupValues[2]
@@ -169,7 +175,7 @@ fun PiMarkdown(
             // Blockquote — > text   (single line; pi rarely emits multi-line quotes)
             if (line.startsWith("> ") || line == ">") {
                 val body = line.removePrefix(">").trimStart()
-                Row(verticalAlignment = androidx.compose.ui.Alignment.Top) {
+                Row(verticalAlignment = Alignment.Top) {
                     Box(modifier = Modifier.width(2.dp).heightIn(min = 16.dp).background(mdQuoteBorder))
                     Spacer(Modifier.width(6.dp))
                     Text(parseInlineMd(body, mdQuote), fontFamily = piMono, fontSize = baseSize, fontStyle = FontStyle.Italic)
@@ -178,8 +184,8 @@ fun PiMarkdown(
             }
 
             // List item — -, *, or numbered.
-            val ulMatch = Regex("""^(\s*)[-*]\s+(.*)$""").find(line)
-            val olMatch = Regex("""^(\s*)(\d+)\.\s+(.*)$""").find(line)
+            val ulMatch = ulRe.find(line)
+            val olMatch = olRe.find(line)
             if (ulMatch != null) {
                 val indent = ulMatch.groupValues[1].length
                 MdListItem(bullet = "•", body = ulMatch.groupValues[2], indent = indent, baseColor = baseColor, baseSize = baseSize)
@@ -208,7 +214,7 @@ fun PiMarkdown(
 private fun MdListItem(bullet: String, body: String, indent: Int, baseColor: Color, baseSize: TextUnit) {
     Row(
         modifier = Modifier.padding(start = (indent * 2).dp),
-        verticalAlignment = androidx.compose.ui.Alignment.Top
+        verticalAlignment = Alignment.Top
     ) {
         Text(bullet, color = mdListBullet, fontFamily = piMono, fontSize = baseSize, fontWeight = FontWeight.Bold)
         Spacer(Modifier.width(6.dp))
@@ -219,8 +225,8 @@ private fun MdListItem(bullet: String, body: String, indent: Int, baseColor: Col
 @Composable
 private fun MdCodeBlock(lines: List<String>, lang: String?) {
     val code = lines.joinToString("\n")
-    val annotated = androidx.compose.runtime.remember(code, lang) { highlightCode(code, lang) }
-    Row(modifier = Modifier.padding(vertical = 3.dp), verticalAlignment = androidx.compose.ui.Alignment.Top) {
+    val annotated = remember(code, lang) { highlightCode(code, lang) }
+    Row(modifier = Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.Top) {
         // Left rule — matches pi's quoteBorder-style accent for code blocks.
         Box(modifier = Modifier.width(2.dp).fillMaxHeight().background(mdCodeBlockBorder))
         Spacer(Modifier.width(6.dp))

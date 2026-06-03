@@ -2,6 +2,7 @@ package com.piremote
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -12,6 +13,8 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
+import androidx.compose.ui.graphics.Color
+import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
@@ -114,22 +117,22 @@ class PiWebSocket : WebSocketListener() {
     // Defined as derived flatMapLatest of (_selectedAgentId → agent.<flow>) so
     // existing UI code that collected messageFlow/busyFlow/etc. transparently
     // sees the active tab's stream.
+    // Shared fallback flows — one per type, reused whenever the agent is missing.
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val messageFlow: StateFlow<List<ChatMessage>> = _selectedAgentId
-        .flatMapLatest { id -> agentMap[id]?.messages ?: MutableStateFlow(emptyList()) }
-        .stateIn(scope, SharingStarted.Eagerly, emptyList())
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val assistingTextFlow: StateFlow<String> = _selectedAgentId
-        .flatMapLatest { id -> agentMap[id]?.assistingText ?: MutableStateFlow("") }
-        .stateIn(scope, SharingStarted.Eagerly, "")
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val busyFlow: StateFlow<Boolean> = _selectedAgentId
-        .flatMapLatest { id -> agentMap[id]?.busy ?: MutableStateFlow(false) }
-        .stateIn(scope, SharingStarted.Eagerly, false)
-    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
-    val turnSummaryFlow: StateFlow<TurnSummary?> = _selectedAgentId
-        .flatMapLatest { id -> agentMap[id]?.turnSummary ?: MutableStateFlow<TurnSummary?>(null) }
-        .stateIn(scope, SharingStarted.Eagerly, null)
+    private fun <T> agentFlow(selector: (AgentState) -> StateFlow<T>, fallbackFlow: StateFlow<T>): StateFlow<T> =
+        _selectedAgentId.flatMapLatest { id ->
+            selector(agentMap[id] ?: return@flatMapLatest fallbackFlow)
+        }.stateIn(scope, SharingStarted.Eagerly, fallbackFlow.value)
+
+    private val _fallbackMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
+    private val _fallbackAssistingText = MutableStateFlow("")
+    private val _fallbackBusy = MutableStateFlow(false)
+    private val _fallbackTurnSummary = MutableStateFlow<TurnSummary?>(null)
+
+    val messageFlow: StateFlow<List<ChatMessage>> = agentFlow({ it.messages }, _fallbackMessages)
+    val assistingTextFlow: StateFlow<String> = agentFlow({ it.assistingText }, _fallbackAssistingText)
+    val busyFlow: StateFlow<Boolean> = agentFlow({ it.busy }, _fallbackBusy)
+    val turnSummaryFlow: StateFlow<TurnSummary?> = agentFlow({ it.turnSummary }, _fallbackTurnSummary)
 
     // ── Global state (not per-agent) ──────────────────────────────────
     private val _sessions = MutableStateFlow<List<RemoteSession>>(emptyList())
@@ -173,6 +176,10 @@ class PiWebSocket : WebSocketListener() {
     // the theme so the phone UI matches the Pi terminal it talks to.
     private val _remoteTheme = MutableStateFlow<com.piremote.theme.PiRemoteTheme?>(null)
     val remoteThemeFlow: StateFlow<com.piremote.theme.PiRemoteTheme?> get() = _remoteTheme
+    // Theme types are in com.piremote.theme — kept fully qualified here to
+    // avoid cluttering the import section of this already-large file with
+    // types used only by parseRemoteTheme(). The theme package is a separate
+    // namespace for palette data; keeping the boundary explicit.
 
     private val _s = MutableStateFlow<ConnectionStatus>(ConnectionStatus.Disconnected)
     val statusFlow: StateFlow<ConnectionStatus> get() = _s
@@ -230,6 +237,7 @@ class PiWebSocket : WebSocketListener() {
         pendingUrl = ""
         retryCount = 0
         sock?.close(1000, null)
+        scope.coroutineContext[Job]?.cancel()
     }
 
     fun sendPrompt(txt: String, targetAgentId: String = "") {
@@ -318,6 +326,15 @@ class PiWebSocket : WebSocketListener() {
         // arrives. handleSessions promotes this state onto the real self agent
         // once its id is known.
         const val REPO_PLACEHOLDER_ID = "__repo_placeholder__"
+        // Theme name check — compiled once, reused per connect.
+        private val THEME_LIGHT_RE = Regex("\\blight\\b", RegexOption.IGNORE_CASE)
+        // Message types that carry an agentId and must be routed to the correct AgentState.
+        private val PER_AGENT_TYPES = setOf(
+            "agent_start", "agent_end",
+            "message_start", "message_end", "message_update",
+            "tool_start", "tool_update", "tool_end",
+            "turn_start", "turn_end"
+        )
     }
     private fun send(type: String, txt: String, targetAgentId: String = "") {
         val target = if (targetAgentId.isNotBlank()) ",\"targetAgentId\":\"${Js.e(targetAgentId)}\"" else ""
@@ -357,7 +374,14 @@ class PiWebSocket : WebSocketListener() {
         }
     }
     override fun onMessage(ws: WebSocket, txt: String) {
-        try { dispatch(txt) } catch (_: Throwable) {}
+        try {
+            dispatch(txt)
+        } catch (t: Throwable) {
+            // Never swallow dispatch errors silently — bad JSON or a null
+            // pointer here would freeze the chat with zero diagnostics.
+            Log.e("PiWebSocket", "dispatch error", t)
+            _s.value = ConnectionStatus.Error("dispatch: ${t.message ?: t.javaClass.simpleName}")
+        }
     }
     override fun onClosed(ws: WebSocket, code: Int, reason: String) {
         _s.value = ConnectionStatus.Disconnected
@@ -386,15 +410,8 @@ class PiWebSocket : WebSocketListener() {
 
         // Per-agent events: route to the right AgentState by event.agentId.
         // Extension stamps agentId on every agent_*/message_*/tool_*/turn_*
-        // event before broadcast (see extension.ts emitAgentEvent), so any
-        // event in the perAgentTypes set will have one.
-        val perAgentTypes = setOf(
-            "agent_start", "agent_end",
-            "message_start", "message_end", "message_update",
-            "tool_start", "tool_update", "tool_end",
-            "turn_start", "turn_end"
-        )
-        if (tp in perAgentTypes) {
+        // event before broadcast (see extension.ts emitAgentEvent).
+        if (tp in PER_AGENT_TYPES) {
             val agentId = Js.gets(j, "agentId")
             if (agentId.isNullOrBlank()) return  // can't route without it
             val state = ensureAgent(agentId)
@@ -426,54 +443,53 @@ class PiWebSocket : WebSocketListener() {
             return
         }
 
-        if (tp == "compaction_start") _compacting.value = true
-        if (tp == "compaction_end") _compacting.value = false
-        if (tp == "extension_ui_request") handleExtensionUI(j)
-        if (tp == "extension_ui_dismiss") {
-            val id = Js.gets(j, "id") ?: return
-            _uiRequests.value = _uiRequests.value.filter { it.id != id }
-        }
-        if (tp == "session_list") handleSessions(j)
-        if (tp == "saved_sessions") handleSavedSessions(j)
-        if (tp == "command_list") handleCommands(j)
-        // Missing handlers added:
-        if (tp == "connected") {
-            val count = (j["clients"] as? Number)?.toInt() ?: 0
-            _clientCount.value = count
-        }
-        // Generic TUI render frames (any Pi extension component)
-        if (tp == "render") {
-            val id = Js.gets(j, "id") ?: ""
-            val ansiLinesRaw = j["lines"]
-            val ansiLines = if (ansiLinesRaw is List<*>) ansiLinesRaw else emptyList<Any>()
-            val inputMode = Js.gets(j, "inputMode") ?: "none"
-            val title = Js.gets(j, "title") ?: ""
-            val dismiss = j["dismiss"] as? Boolean == true
-            // Per-line tap values: non-empty entry => the line is tappable and
-            // the entry is the string sent back via sendInput on tap. Optional
-            // for backward compat; renderers that don't set it get plain text.
-            val tapValuesRaw = j["tapValues"]
-            val tapValues = (tapValuesRaw as? List<*>)?.map { it?.toString() ?: "" } ?: emptyList()
-            // Empty lines or explicit dismiss → clear the render frame
-            val resolved = ansiLines.filterIsInstance<String>()
-            if (dismiss || resolved.isEmpty()) {
-                _renderFrame.value = null
-            } else {
-                _renderFrame.value = RenderFrame(
-                    id = id,
-                    ansiLines = resolved,
-                    inputMode = inputMode,
-                    title = title,
-                    tapValues = tapValues
-                )
+        when (tp) {
+            "compaction_start" -> _compacting.value = true
+            "compaction_end" -> _compacting.value = false
+            "extension_ui_request" -> handleExtensionUI(j)
+            "extension_ui_dismiss" -> {
+                val id = Js.gets(j, "id") ?: return
+                _uiRequests.value = _uiRequests.value.filter { it.id != id }
             }
-        }
-        // Remote theme (pi-studio-style: extension broadcasts the active Pi theme
-        // palette so the phone UI mirrors the Pi terminal it's talking to.
-        if (tp == "theme_info") {
-            val theme = parseRemoteTheme(JP.nj(j, "theme"))
-            theme?.let { _remoteTheme.value = it }
-            return
+            "session_list" -> handleSessions(j)
+            "saved_sessions" -> handleSavedSessions(j)
+            "command_list" -> handleCommands(j)
+            "connected" -> {
+                val count = (j["clients"] as? Number)?.toInt() ?: 0
+                _clientCount.value = count
+            }
+            // Generic TUI render frames (any Pi extension component)
+            "render" -> {
+                val id = Js.gets(j, "id") ?: ""
+                val ansiLinesRaw = j["lines"]
+                val ansiLines = if (ansiLinesRaw is List<*>) ansiLinesRaw else emptyList<Any>()
+                val inputMode = Js.gets(j, "inputMode") ?: "none"
+                val title = Js.gets(j, "title") ?: ""
+                val dismiss = j["dismiss"] as? Boolean == true
+                // Per-line tap values: non-empty entry => the line is tappable and
+                // the entry is the string sent back via sendInput on tap. Optional
+                // for backward compat; renderers that don't set it get plain text.
+                val tapValuesRaw = j["tapValues"]
+                val tapValues = (tapValuesRaw as? List<*>)?.map { it?.toString() ?: "" } ?: emptyList()
+                // Empty lines or explicit dismiss → clear the render frame
+                val resolved = ansiLines.filterIsInstance<String>()
+                if (dismiss || resolved.isEmpty()) {
+                    _renderFrame.value = null
+                } else {
+                    _renderFrame.value = RenderFrame(
+                        id = id,
+                        ansiLines = resolved,
+                        inputMode = inputMode,
+                        title = title,
+                        tapValues = tapValues
+                    )
+                }
+            }
+            // Remote theme — the phone UI mirrors the Pi terminal's palette.
+            "theme_info" -> {
+                val theme = parseRemoteTheme(JP.nj(j, "theme"))
+                theme?.let { _remoteTheme.value = it }
+            }
         }
     }
 
@@ -483,27 +499,27 @@ class PiWebSocket : WebSocketListener() {
         if (t == null) return null
         val colors = t["colors"] as? Map<*, *> ?: return null
         val vars: Map<*, *> = t["vars"] as? Map<*, *> ?: emptyMap<Any?, Any?>()
-        fun hexToColor(s: String): androidx.compose.ui.graphics.Color? {
+        fun hexToColor(s: String): Color? {
             return try {
                 if (!s.startsWith('#') || s.length != 7) return null
                 val h = s.substring(1)
                 val r = h.substring(0, 2).toInt(16) shl 16
                 val g = h.substring(2, 4).toInt(16) shl 8
                 val b = h.substring(4, 6).toInt(16)
-                androidx.compose.ui.graphics.Color(r or g or b or -0x1000000)
+                Color(r or g or b or -0x1000000)
             } catch (_: Exception) { null }
         }
-        fun resolveRaw(v: Any?): androidx.compose.ui.graphics.Color? = when {
+        fun resolveRaw(v: Any?): Color? = when {
             v is String -> hexToColor(v) ?: vars[v]?.let { resolveRaw(it) }
-            v is Number -> androidx.compose.ui.graphics.Color(v.toInt())
+            v is Number -> Color(v.toInt())
             else -> null
         }
-        fun resolve(key: String): androidx.compose.ui.graphics.Color? = resolveRaw(colors[key])
+        fun resolve(key: String): Color? = resolveRaw(colors[key])
         // Prefer the host's explicit isLight flag (luminance-derived). Fall back
         // to a word-boundary name check so "Twilight"/"Delight" aren't misread.
         val isLight = (t["isLight"] as? Boolean)
             ?: (Js.gets(t, "name")?.let {
-                Regex("\\blight\\b", RegexOption.IGNORE_CASE).containsMatchIn(it)
+                THEME_LIGHT_RE.containsMatchIn(it)
             } == true)
         val cs = if (isLight) com.piremote.theme.ColorScheme.LIGHT
                  else com.piremote.theme.ColorScheme.DARK
@@ -862,7 +878,9 @@ class PiWebSocket : WebSocketListener() {
                 name = (s["name"] as? String) ?: "",
                 firstMessage = (s["firstMessage"] as? String) ?: "",
                 messageCount = ((s["messageCount"] as? Number) ?: 0).toInt(),
-                modified = ((s["modified"] as? Number) ?: 0).toLong()
+                modified = ((s["modified"] as? Number) ?: 0).toLong(),
+                status = (s["status"] as? String) ?: "completed",
+                lastAssistantMessage = (s["lastAssistantMessage"] as? String) ?: ""
             )
         }
     }
@@ -873,7 +891,15 @@ class PiWebSocket : WebSocketListener() {
 
         // Fire-and-forget methods
         if (method == "notify") {
-            val msg = Js.gets(j, "message") ?: Js.gets(j, "content") ?: "Notification"
+            // Prefer "message" (canonical field); fall back to "content" only if
+            // it actually exists as a non-null value. If neither is present, use
+            // a default. This avoids accidentally passing null when a non-string
+            // field (e.g. an integer) occupies one of the slots.
+            val msg = when {
+                "message" in j -> j["message"]?.toString() ?: "Notification"
+                "content" in j -> j["content"]?.toString() ?: "Notification"
+                else -> "Notification"
+            }
             val nt = Js.gets(j, "notifyType") ?: Js.gets(j, "type") ?: "info"
             val banner = BannerMessage(msg, nt)
             val list = _notifyBanners.value.toMutableList()
@@ -898,7 +924,7 @@ class PiWebSocket : WebSocketListener() {
         }
         if (method == "setWidget") {
             val key = Js.gets(j, "widgetKey") ?: return
-            val lines = j["widgetLines"] as? List<*>?
+            val lines = j["widgetLines"] as? List<*>
             val current = _widgets.value.toMutableMap()
             if (lines != null) current[key] = lines.map { it?.toString() ?: "" } else current.remove(key)
             _widgets.value = current
@@ -1048,7 +1074,9 @@ data class SavedSession(
     val name: String,
     val firstMessage: String,
     val messageCount: Int,
-    val modified: Long
+    val modified: Long,
+    val status: String = "completed",  // "working" | "completed" | "archived"
+    val lastAssistantMessage: String = ""  // model's last reply (shown when waiting for user)
 )
 
 data class RemoteSession(
