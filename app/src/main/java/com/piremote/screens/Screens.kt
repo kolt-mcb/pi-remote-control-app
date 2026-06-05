@@ -2,6 +2,7 @@ package com.piremote.screens
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -23,6 +24,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -34,6 +36,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.piremote.*
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.graphics.asImageBitmap
 import com.piremote.theme.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -1208,6 +1217,26 @@ fun PiTerminalInput(
     setFollowUpMode: (Boolean) -> Unit,
     commands: List<RemoteCommand> = emptyList()
 ) {
+    // Image picker — opens the system gallery/camera picker
+    val context = LocalContext.current
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        uri?.let {
+            try {
+                val bytes = context.contentResolver.openInputStream(it)?.use { stream ->
+                    stream.readBytes()
+                }
+                if (bytes != null) {
+                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    val mime = context.contentResolver.getType(it)?.takeIf { m -> m.startsWith("image/") } ?: "image/jpeg"
+                    val dataUri = "data:$mime;base64,$base64"
+                    vm.addPendingImage(dataUri)
+                }
+            } catch (_: Exception) {}
+        }
+    }
+    val pendingImages = vm._pendingImages.collectAsState()
     // ── Slash command autocomplete row ─────────────────────────────
     val isSlash = input.trimStart().startsWith("/") && !busy
     val slashQuery = if (isSlash) {
@@ -1238,7 +1267,55 @@ fun PiTerminalInput(
         if (showAutocomplete) {
             PiSlashAutocomplete(matchedCommands, slashQuery) { name -> vm.setInputText("/$name") }
         }
-        // Row: `>` + TextField
+        // ── Pending image thumbnails ──────────────────────────────────
+        if (pendingImages.value.isNotEmpty()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.padding(start = 20.dp, top = 2.dp, bottom = 2.dp, end = 6.dp)
+            ) {
+                pendingImages.value.forEachIndexed { i, dataUri ->
+                    // Extract base64 from data URI for thumbnail preview
+                    val base64 = dataUri.substringAfter("base64,")
+                    val mime = dataUri.substringAfter("data:").substringBefore(";")
+                    val bitmap = remember(base64) {
+                        try {
+                            val bytes = Base64.decode(base64, Base64.NO_WRAP)
+                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                        } catch (_: Exception) { null }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .border(1.dp, accent, RoundedCornerShape(4.dp))
+                            .background(selectedBg)
+                    ) {
+                        bitmap?.let {
+                            Image(
+                                bitmap = it,
+                                contentDescription = "Pending image ${i + 1}",
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clickable { vm.removePendingImage(dataUri) }
+                                    .clip(RoundedCornerShape(3.dp)),
+                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                            )
+                        }
+                        // Remove indicator (X in top-right)
+                        Text(
+                            "✕",
+                            color = error,
+                            fontFamily = piMono,
+                            fontSize = 8.sp,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .clickable { vm.removePendingImage(dataUri) }
+                                .padding(1.dp)
+                        )
+                    }
+                }
+            }
+        }
+        // Row: `>` + TextField + image picker
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -1276,10 +1353,28 @@ fun PiTerminalInput(
                         val args = if (spaceIdx > 1) trimmed.substring(spaceIdx + 1).trim() else ""
                         vm.sendSlashCommand(cmd, args)
                     }
-                    else -> vm.sendPrompt()
+                    else -> {
+                        if (pendingImages.value.isNotEmpty()) vm.sendPromptWithImages()
+                        else vm.sendPrompt()
+                    }
                 }
             })
         )
+        // Image picker button — opens system image picker
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clickable(enabled = !busy && !steerMode && !followUpMode) { 
+                    imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) 
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                "📎",
+                fontSize = 16.sp,
+                modifier = Modifier.padding(2.dp)
+            )
+        }
         }
     }
 }
@@ -1394,6 +1489,42 @@ fun PiMessageBubble(msg: ChatMessage) {
     }
 }
 
+/** Decode a base64 image string to an ImageBitmap. Returns null on failure. */
+@Composable
+fun base64ToBitmap(chatImage: ChatImage): androidx.compose.ui.graphics.ImageBitmap? {
+    return remember(chatImage.data) {
+        try {
+            val bytes = Base64.decode(chatImage.data, Base64.NO_WRAP)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        } catch (_: Exception) { null }
+    }
+}
+
+/** Display images inline in a message bubble. */
+@Composable
+fun InlineImages(images: List<ChatImage>, modifier: Modifier = Modifier) {
+    if (images.isEmpty()) return
+    Column(modifier = modifier) {
+        images.forEachIndexed { i, img ->
+            val bitmap = base64ToBitmap(img)
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = "Image ${i + 1}",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 300.dp)
+                        .padding(top = 2.dp),
+                    contentScale = androidx.compose.ui.layout.ContentScale.FillWidth
+                )
+            } else {
+                Text("[image]", color = textMuted, fontFamily = piMono, fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 2.dp, start = 4.dp))
+            }
+        }
+    }
+}
+
 /** Render host-supplied ANSI lines (an extension's own Component, rendered at our
  *  width) verbatim — full color/background fidelity, reflowed to the phone.
  *  Reuses [parseAnsiLine]/[buildAnsiText] from TerminalView. */
@@ -1444,13 +1575,18 @@ fun PiRenderedTool(msg: ChatMessage) {
  */
 @Composable
 fun PiUserMessage(msg: ChatMessage) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp, horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.Top
-    ) {
-        Text("> ", color = accent, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-        Text(msg.content, color = userBubbleText, fontFamily = piMono, fontSize = 13.sp, modifier = Modifier.weight(1f))
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp, horizontal = 4.dp)) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Text("> ", color = accent, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            if (msg.content.isNotBlank()) {
+                Text(msg.content, color = userBubbleText, fontFamily = piMono, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            }
+        }
+        // Show attached images inline
+        InlineImages(msg.images, modifier = Modifier.padding(start = 4.dp))
     }
 }
 
@@ -1549,8 +1685,13 @@ fun PiToolMessage(msg: ChatMessage) {
                 Text("($shortArgs)", color = textMuted, fontFamily = piMono, fontSize = 12.sp, maxLines = 1)
             }
             if (msg.isError) Text("error", color = error, fontFamily = piMono, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            if (msg.images.isNotEmpty()) Text("🖼 ${msg.images.size}", color = accent, fontFamily = piMono, fontSize = 10.sp)
             Spacer(Modifier.weight(1f))
             if (copied) Text("copied", color = toolBorder, fontFamily = piMono, fontSize = 10.sp)
+        }
+        // Inline images from tool results (e.g. `read` on image files)
+        if (msg.images.isNotEmpty()) {
+            InlineImages(msg.images, modifier = Modifier.padding(start = 16.dp, top = 2.dp))
         }
 
         // For edit / multiEdit / write tools the actual change lives in the

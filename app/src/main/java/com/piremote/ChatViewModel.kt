@@ -44,6 +44,11 @@ object MsgId {
     fun next(): String = "$epoch-${counter.incrementAndGet()}"
 }
 
+data class ChatImage(
+    val data: String,          // base64-encoded image data
+    val mimeType: String       // e.g. "image/png", "image/jpeg"
+)
+
 data class ChatMessage(
     val id: String = MsgId.next(),
     val toolCallId: String = "",
@@ -56,6 +61,9 @@ data class ChatMessage(
     // and tool results), rendered at the phone's width. When set, the UI shows
     // these verbatim instead of [content], mirroring the extension's presentation.
     val ansiLines: List<String>? = null,
+    // Images from tool results (e.g. `read` on image files) or user attachments.
+    // Each entry carries base64 data + MIME type.
+    val images: List<ChatImage> = emptyList(),
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -296,8 +304,41 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         if (t.isNotEmpty()) {
             _ws.sendPrompt(t, _selectedSession.value)
             _inp.value = ""
+            _pendingImages.value = emptyList()
         }
     }
+    /** Send a prompt with attached images (base64 data URIs). The server's
+     *  handleHostCmd strips the data-URI prefix and forwards raw base64 + MIME.
+     *  Also adds the images to the local chat as a User message so they show
+     *  inline before the agent processes them. */
+    fun sendPromptWithImages() {
+        val t = _inp.value.trim()
+        val images = _pendingImages.value
+        if (t.isNotEmpty() || images.isNotEmpty()) {
+            _ws.sendPromptWithImages(t, images, _selectedSession.value)
+            // Show the images locally in the chat. _pendingImages holds full
+            // data: URIs (data:<mime>;base64,<data>), but ChatImage.data is raw
+            // base64 (decoded directly by base64ToBitmap), so split off the
+            // prefix here — mirroring the host's strip in handleHostCmd.
+            if (images.isNotEmpty()) {
+                val chatImages = images.map { uri ->
+                    ChatImage(
+                        data = uri.substringAfter("base64,"),
+                        mimeType = uri.substringAfter("data:").substringBefore(";").ifBlank { "image/jpeg" },
+                    )
+                }
+                _ws.ensureAgent(_selectedSession.value).messages.value +=
+                    ChatMessage(type = MessageToolType.User, content = t, images = chatImages)
+            }
+            _inp.value = ""
+            _pendingImages.value = emptyList()
+        }
+    }
+    /** Images the user has selected but hasn't sent yet. */
+    val _pendingImages = MutableStateFlow<List<String>>(emptyList())
+    fun setPendingImages(uris: List<String>) { _pendingImages.value = uris }
+    fun addPendingImage(uri: String) { _pendingImages.value = _pendingImages.value + uri }
+    fun removePendingImage(uri: String) { _pendingImages.value = _pendingImages.value - uri }
     fun sendSteer() {
         val t = _inp.value.trim()
         if (t.isNotEmpty()) { _ws.sendSteer(t, _selectedSession.value); _inp.value = "" }

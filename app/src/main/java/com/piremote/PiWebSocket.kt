@@ -104,8 +104,11 @@ class PiWebSocket : WebSocketListener() {
     fun selectAgent(id: String) { if (agentMap.containsKey(id)) _selectedAgentId.value = id }
 
     /** Get or create the per-agent state for [id]. Newly-created agents auto-
-     *  publish to agentsFlow and become the default selection if none yet. */
-    private fun ensureAgent(id: String): AgentState =
+     *  publish to agentsFlow and become the default selection if none yet.
+     *  `internal` so the ViewModel can locally echo a just-sent message (e.g. a
+     *  user prompt with image attachments) onto the active agent before the host
+     *  round-trips it back. */
+    internal fun ensureAgent(id: String): AgentState =
         agentMap.getOrPut(id) {
             val s = AgentState(id)
             _agents.value = agentMap.values.toList()
@@ -243,6 +246,15 @@ class PiWebSocket : WebSocketListener() {
     fun sendPrompt(txt: String, targetAgentId: String = "") {
         send("prompt", txt, targetAgentId)
     }
+    /** Send a prompt with image attachments. Images are sent as data URIs
+     *  (data:image/png;base64,...) which the server strips and forwards as
+     *  raw base64 + MIME type. */
+    fun sendPromptWithImages(txt: String, images: List<String>, targetAgentId: String = "") {
+        if (images.isEmpty()) { send("prompt", txt, targetAgentId); return }
+        val target = if (targetAgentId.isNotBlank()) ",\"targetAgentId\":\"${Js.e(targetAgentId)}\"" else ""
+        val imgs = images.joinToString(",") { "\"${Js.e(it)}\"" }
+        sock?.send("{\"type\":\"prompt\",\"message\":\"${Js.e(txt)}\",\"images\":[$imgs]$target}")
+    }
     fun sendSteer(txt: String, targetAgentId: String = "") {
         send("steer", txt, targetAgentId)
     }
@@ -313,14 +325,24 @@ class PiWebSocket : WebSocketListener() {
      * agentId, so all saved messages land on a single placeholder "self"
      * AgentState. When session_list arrives and identifies the real self
      * agent, handleSessions migrates these messages onto that agent.
+     *
+     * Skipped once the host has replayed authoritative history this connection
+     * (see [handleHistory]): the server's copy is the source of truth, and a
+     * late DB read landing after the history frame would otherwise re-create the
+     * placeholder and prepend stale rows on the next session_list merge.
      */
     fun repoMessages(saved: List<ChatMessage>) {
-        if (saved.isEmpty()) return
+        if (saved.isEmpty() || historyApplied) return
         val placeholder = ensureAgent(REPO_PLACEHOLDER_ID)
         placeholder.name = "pi"
         placeholder.isSelf = true
         placeholder.messages.value = placeholder.messages.value + saved
     }
+
+    // True once the host sent a `history` frame on the current connection. Reset
+    // on every (re)open so a fresh socket replays history again. Hosts too old to
+    // send history leave this false, so the DB-cache restore path still works.
+    @Volatile private var historyApplied = false
     companion object {
         // Sentinel ID used for saved-message restore before any session_list
         // arrives. handleSessions promotes this state onto the real self agent
@@ -351,6 +373,10 @@ class PiWebSocket : WebSocketListener() {
     override fun onOpen(ws: WebSocket, r: okhttp3.Response) {
         _s.value = ConnectionStatus.Connected
         retryCount = 0
+        // A new socket gets a fresh history replay from the host; until it lands,
+        // the DB-cache restore is allowed to populate the chat (and is overridden
+        // when the authoritative history arrives moments later).
+        historyApplied = false
         // Request session list and command list on connect
         sock?.send("{\"type\":\"get_sessions\"}")
         sock?.send("{\"type\":\"get_commands\"}")
@@ -451,6 +477,7 @@ class PiWebSocket : WebSocketListener() {
                 val id = Js.gets(j, "id") ?: return
                 _uiRequests.value = _uiRequests.value.filter { it.id != id }
             }
+            "history" -> handleHistory(j)
             "session_list" -> handleSessions(j)
             "saved_sessions" -> handleSavedSessions(j)
             "command_list" -> handleCommands(j)
@@ -586,7 +613,26 @@ class PiWebSocket : WebSocketListener() {
         // ([{type:"text",text:"hi"}, {type:"image",...}, ...]); plain-string
         // content also appears for some legacy paths. extractText handles both.
         val content = extractText(mm)
-        if (role == "user") state.messages.value = state.messages.value + ChatMessage(type = MessageToolType.User, content = content)
+        if (role == "user") {
+            // Check for images: first in explicit `images` field, then in content array.
+            // Server's message_end attaches an `images` array; message_start may
+            // have images inline in the content array.
+            var images = parseChatImages(mm["images"])
+            if (images.isEmpty()) {
+                images = parseChatImages(mm) // checks mm["content"] array
+            }
+            // Avoid duplicates: if the user just sent this message with images
+            // (via sendPromptWithImages), a local ChatMessage already exists.
+            // Also check for text-only duplicates.
+            val last = state.messages.value.lastOrNull()
+            val isDup = last?.type == MessageToolType.User &&
+                (last.images.isNotEmpty() || (last.content == content && images.isEmpty()))
+            if (!isDup) {
+                state.messages.value = state.messages.value + ChatMessage(
+                    type = MessageToolType.User, content = content, images = images
+                )
+            }
+        }
         if (role == "toolResult") {
             val tid = Js.gets(mm, "toolCallId") ?: ""
             // Skip if tool_end already created this ToolResult from streaming
@@ -640,6 +686,17 @@ class PiWebSocket : WebSocketListener() {
                     ansiLines = lines,
                 )
             }
+        }
+        // User messages with image attachments: the server forwards images
+        // as a separate `images` array, or they may be in the content array.
+        val userImages = parseChatImages(j["images"])
+            .ifEmpty { parseChatImages(j) } // also check content array
+        if (role == "user" && userImages.isNotEmpty()) {
+            state.messages.value = state.messages.value + ChatMessage(
+                type = MessageToolType.User,
+                content = extractText(j),
+                images = userImages,
+            )
         }
     }
 
@@ -709,6 +766,9 @@ class PiWebSocket : WebSocketListener() {
         // Host-rendered ANSI lines for the tool's own result renderer (e.g.
         // pi-subagents cards), rendered at our width. Shown verbatim when present.
         val ansiLines = (j["ansiLines"] as? List<*>)?.filterIsInstance<String>()?.takeIf { it.isNotEmpty() }
+        // Images from tool results (e.g. `read` on image files).
+        // Server sends: {images: [{data: base64, mimeType: "image/..."}, ...]}
+        val images = parseChatImages(j["images"])
 
         val ml = state.messages.value.toMutableList()
         val idx = ml.indexOfLast { it.toolCallId == id && it.type == MessageToolType.Streaming }
@@ -720,6 +780,7 @@ class PiWebSocket : WebSocketListener() {
                 content = content,
                 isError = isError,
                 ansiLines = ansiLines,
+                images = images,
                 timestamp = ml[idx].timestamp
             )
             state.messages.value = ml
@@ -727,10 +788,21 @@ class PiWebSocket : WebSocketListener() {
             state.messages.value = ml + ChatMessage(
                 toolCallId = id, type = MessageToolType.ToolResult,
                 toolName = nm, content = content, isError = isError,
-                ansiLines = ansiLines
+                ansiLines = ansiLines, images = images
             )
         }
         state.tbufs.remove(id)
+    }
+
+    /** Parse images array from a JSON message/tool result. */
+    private fun parseChatImages(raw: Any?): List<ChatImage> {
+        val arr = raw as? List<*> ?: return emptyList()
+        return arr.mapNotNull { block ->
+            if (block !is Map<*, *>) return@mapNotNull null
+            val data = (block["data"] as? String)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val mime = Js.gets(block, "mimeType") ?: "image/png"
+            ChatImage(data = data, mimeType = mime)
+        }
     }
 
     // Build a compact summary of tools used during the last turn
@@ -790,6 +862,79 @@ class PiWebSocket : WebSocketListener() {
         }
         _commands.value = list
     }
+    /**
+     * Apply a full conversation replay from the host. Sent on every (re)connect
+     * so the phone shows the whole thread — including turns that happened in the
+     * terminal or on another device before this client joined — not just events
+     * from the moment it connected.
+     *
+     * The frame is authoritative: it REPLACES the target agent's message list
+     * (rather than appending) so a reconnect repaints cleanly without duplicating
+     * the live events that follow. Each item is a pre-shaped bubble; see the
+     * extension's sendHistory() for the wire format.
+     */
+    private fun handleHistory(j: Map<*, *>) {
+        val agentId = Js.gets(j, "agentId")
+        if (agentId.isNullOrBlank()) return
+        val arr = j["messages"] as? List<*> ?: return
+        val rebuilt = arr.mapNotNull { item ->
+            if (item !is Map<*, *>) return@mapNotNull null
+            val role = Js.gets(item, "role") ?: return@mapNotNull null
+            val ansiLines = (item["ansiLines"] as? List<*>)
+                ?.filterIsInstance<String>()?.takeIf { it.isNotEmpty() }
+            val images = parseChatImages(item["images"])
+            when (role) {
+                "user" -> ChatMessage(
+                    type = MessageToolType.User,
+                    content = Js.gets(item, "content") ?: "",
+                    images = images,
+                )
+                "assistant" -> ChatMessage(
+                    type = MessageToolType.Assistant,
+                    content = Js.gets(item, "content") ?: "",
+                )
+                "thinking" -> ChatMessage(
+                    type = MessageToolType.Thinking,
+                    content = Js.gets(item, "content") ?: "",
+                )
+                "tool" -> ChatMessage(
+                    type = MessageToolType.ToolResult,
+                    toolCallId = Js.gets(item, "toolCallId") ?: "",
+                    toolName = Js.gets(item, "toolName") ?: "?",
+                    toolArgs = Js.gets(item, "toolArgs") ?: "",
+                    content = Js.gets(item, "content") ?: "",
+                    isError = Js.getBool(item, "isError") ?: false,
+                    ansiLines = ansiLines,
+                    images = images,
+                )
+                "custom" -> if (ansiLines != null) ChatMessage(
+                    type = MessageToolType.Custom,
+                    content = Js.gets(item, "customType") ?: "",
+                    ansiLines = ansiLines,
+                ) else null
+                else -> null
+            }
+        }
+
+        val state = ensureAgent(agentId)
+        state.isSelf = true
+        val sid = Js.gets(j, "sessionId")
+        if (!sid.isNullOrBlank()) state.sessionId = sid
+        // Replace — the host's copy is the source of truth for everything up to
+        // the connect point. Live message_*/tool_* events append after this.
+        state.messages.value = rebuilt
+        historyApplied = true
+
+        // Drop the DB-restore placeholder, if any: its rows are now superseded by
+        // this authoritative replay, and leaving it would let handleSessions
+        // prepend the stale copy on the next session_list merge.
+        if (agentMap.containsKey(REPO_PLACEHOLDER_ID)) {
+            agentMap.remove(REPO_PLACEHOLDER_ID)
+            _agents.value = agentMap.values.toList()
+            if (_selectedAgentId.value == REPO_PLACEHOLDER_ID) _selectedAgentId.value = agentId
+        }
+    }
+
     private fun handleSessions(j: Map<*, *>) {
         val sessionsArr = j["sessions"] ?: return
         if (sessionsArr !is List<*>) return
