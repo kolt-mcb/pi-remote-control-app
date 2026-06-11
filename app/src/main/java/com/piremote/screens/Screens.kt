@@ -1330,7 +1330,7 @@ fun PiTerminalInput(
             placeholder = {
                 if (placeholder.isNotBlank()) Text(placeholder, color = textMuted, fontFamily = piMono, fontSize = 13.sp)
             },
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.weight(1f),
             maxLines = 4, singleLine = false,
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = bg, unfocusedContainerColor = bg,
