@@ -19,6 +19,104 @@ class MessageNormalizerTest {
             .flatMap { it.lines }
             .joinToString("\n") { line -> line.joinToString("") { it.first } }
 
+    // ── stream passthrough (host-rendered, PROTOCOL.md single stream) ──
+
+    @Test
+    fun streamPassesThroughVerbatimWithoutGutter() {
+        val esc = ESC.toString()
+        val msg = ChatMessage(
+            type = MessageToolType.Assistant, content = "ignored",
+            stream = "${esc}[1mHeading${esc}[0m\nplain second line",
+        )
+        val text = render(msg).single() as TtyBlock.Text
+        // No client decoration: first segment is the host's own content.
+        val firstSeg = text.lines.first().first()
+        assertEquals("Heading", firstSeg.first)
+        assertTrue(firstSeg.second.bold)
+        assertEquals("plain second line", text.lines[1].joinToString("") { it.first })
+    }
+
+    @Test
+    fun streamTakesPrecedenceOverAnsiLines() {
+        val msg = ChatMessage(
+            type = MessageToolType.Custom,
+            stream = "from stream",
+            ansiLines = listOf("from ansiLines"),
+        )
+        val flat = plainText(render(msg))
+        assertTrue(flat.contains("from stream"))
+        assertTrue(!flat.contains("from ansiLines"))
+    }
+
+    @Test
+    fun streamExpandedSelectedWhenExpanded() {
+        val msg = ChatMessage(
+            type = MessageToolType.ToolResult, toolName = "edit",
+            stream = "collapsed view",
+            streamExpanded = "expanded view",
+        )
+        assertTrue(plainText(render(msg, expanded = false)).contains("collapsed view"))
+        assertTrue(plainText(render(msg, expanded = true)).contains("expanded view"))
+    }
+
+    @Test
+    fun streamWithoutExpandedVariantUsedForBothStates() {
+        val msg = ChatMessage(type = MessageToolType.ToolResult, toolName = "bash", stream = "only view")
+        assertTrue(plainText(render(msg, expanded = true)).contains("only view"))
+        assertTrue(plainText(render(msg, expanded = false)).contains("only view"))
+    }
+
+    @Test
+    fun overflowImagesAppendedAfterStream() {
+        val msg = ChatMessage(
+            type = MessageToolType.ToolResult, toolName = "read",
+            stream = "tool header",
+            images = listOf(ChatImage(data = png64, mimeType = "image/png")),
+        )
+        val blocks = render(msg)
+        assertTrue(blocks.first() is TtyBlock.Text)
+        assertTrue(blocks.any { it is TtyBlock.Image })
+    }
+
+    @Test
+    fun imagesAppendedAfterAnsiLinesToo() {
+        val msg = ChatMessage(
+            type = MessageToolType.ToolResult, toolName = "read",
+            ansiLines = listOf("result line"),
+            images = listOf(ChatImage(data = png64, mimeType = "image/png")),
+        )
+        val blocks = render(msg)
+        assertTrue(plainText(blocks).contains("result line"))
+        assertTrue(blocks.any { it is TtyBlock.Image })
+    }
+
+    @Test
+    fun osc133ZoneMarkersInStreamAreDropped() {
+        // pi's components wrap output in OSC 133 prompt-zone markers; the
+        // parser must consume them without leaking artifacts into the text.
+        val esc = ESC.toString()
+        val bel = 7.toChar()
+        val msg = ChatMessage(
+            type = MessageToolType.Assistant,
+            stream = "${esc}]133;A${bel}first${esc}]133;B${bel}${esc}]133;C${bel} last",
+        )
+        val flat = plainText(render(msg))
+        assertEquals("first last", flat)
+    }
+
+    @Test
+    fun streamWithEmbeddedOsc1337ImageRenders() {
+        val esc = ESC.toString()
+        val osc = "${esc}]1337;File=inline=1;size=16;mime=image/png:${png64}${esc}\\"
+        val msg = ChatMessage(
+            type = MessageToolType.User,
+            stream = "see image:\n$osc",
+        )
+        val blocks = render(msg)
+        assertTrue(plainText(blocks).contains("see image:"))
+        assertTrue(blocks.any { it is TtyBlock.Image })
+    }
+
     // ── ansiLines passthrough (host-rendered) ─────────────────────────
 
     @Test

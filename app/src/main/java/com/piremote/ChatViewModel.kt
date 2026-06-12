@@ -57,9 +57,17 @@ data class ChatMessage(
     val toolArgs: String = "",
     val content: String = "",
     val isError: Boolean = false,
+    // Host-rendered ANSI+OSC stream (PROTOCOL.md "single stream field"): the
+    // complete presentation of this message, rendered by the host at the
+    // phone's width. When set, the UI feeds it through the TTY parser verbatim
+    // — no client-side rendering at all. [streamExpanded] is the expanded
+    // variant for tool results (tap-to-expand); null means same as [stream].
+    val stream: String? = null,
+    val streamExpanded: String? = null,
     // Host-rendered ANSI lines for an extension's own Component (custom messages
     // and tool results), rendered at the phone's width. When set, the UI shows
     // these verbatim instead of [content], mirroring the extension's presentation.
+    // Predates [stream]; kept for older hosts.
     val ansiLines: List<String>? = null,
     // Images from tool results (e.g. `read` on image files) or user attachments.
     // Each entry carries base64 data + MIME type.

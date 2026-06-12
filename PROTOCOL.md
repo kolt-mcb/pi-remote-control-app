@@ -8,17 +8,34 @@ extension (or any program whose output reaches the app) may emit.
 
 ## Transport
 
-Escape sequences ride inside the existing JSON string fields:
+Escape sequences ride inside JSON string fields, in precedence order:
 
-- `content` of assistant / tool messages
-- `ansiLines[]` of tool results and custom messages (each entry is one line of
-  the stream; the app joins them with `\n`)
+- `stream` — the **primary channel**: one ANSI+OSC string holding the
+  message's complete presentation, rendered by the host at the phone's
+  reported width (`viewport` → `clientCols`). The app feeds it through the
+  TTY parser verbatim — no client-side decoration at all. Tool results also
+  carry `streamExpanded`, the expanded variant used when the user taps to
+  expand (absent = same as `stream`).
+- `ansiLines[]` — legacy per-line shape from older hosts (each entry is one
+  line; the app joins with `\n` and adds a gutter). Ignored when `stream`
+  is present.
+- `content` — raw text fallback, rendered client-side as plain wrapped text
+  when neither of the above is present.
 
-A future host version may send a single `stream` field per message; the app
-feeds either shape through the same parser. **Back-compat:** the app desugars
-today's structured fields client-side — `images[]` entries become OSC 1337
-sequences, markdown in assistant `content` is converted to SGR styling — so
-current hosts need no changes.
+`stream` appears on: `message_start`/`message_end` (user messages),
+`message_update` `text_end` / `thinking_end` (final rendered block),
+`message_update` `ansi_snapshot` (throttled re-render of the in-flight
+block, so streaming text is styled), `tool_end`, and every `history` item.
+
+Oversize images the host cannot embed in the stream (> 8 MiB base64) still
+travel as a structured `images[]` array; the app appends them after the
+stream. The host extension renders with pi's own interactive components
+(AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent),
+so the phone shows exactly what the terminal shows.
+
+The host re-sends the full `history` replay whenever the reported viewport
+width changes, re-rendering the whole scrollback at the new width. Hosts in
+peer mode receive the width via `route_viewport` forwarded by the host.
 
 Because raw program output from the Pi flows through tool output and
 `ansiLines`, standard terminal tools (`imgcat`, kitty `icat`, `chafa`,
@@ -103,9 +120,8 @@ ST. Emit ST — it is the spec-correct form and what `TtyEscapes` produces.
 
 ## Host migration path
 
-1. **Today:** keep sending structured JSON (`images[]`, markdown `content`,
-   `ansiLines[]`). The app desugars into the stream.
-2. **Next:** emit OSC 1337 / OSC 8 directly inside `ansiLines` or tool output
-   where it is more natural (e.g. passing through CLI tool output untouched).
-3. **Later:** a single `stream` field per message replaces the structured
-   fields; the app already renders both identically.
+Complete as of June 2026 — the host extension renders every message type to
+a single `stream` field (with images embedded as OSC 1337), and the app
+renders it verbatim. The structured fields (`content`, `ansiLines[]`,
+`images[]`) remain as documented above for older hosts and as the raw-data
+fallback when host-side rendering fails.

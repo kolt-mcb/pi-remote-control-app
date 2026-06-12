@@ -604,6 +604,8 @@ class PiWebSocket : WebSocketListener() {
             if (images.isEmpty()) {
                 images = parseChatImages(mm) // checks mm["content"] array
             }
+            // Host-rendered presentation of the user bubble (PROTOCOL.md stream).
+            val stream = Js.gets(mm, "stream")
             // Avoid duplicates: if the user just sent this message with images
             // (via sendPromptWithImages), a local ChatMessage already exists.
             // Also check for text-only duplicates.
@@ -612,8 +614,13 @@ class PiWebSocket : WebSocketListener() {
                 (last.images.isNotEmpty() || (last.content == content && images.isEmpty()))
             if (!isDup) {
                 state.messages.value = state.messages.value + ChatMessage(
-                    type = MessageToolType.User, content = content, images = images
+                    type = MessageToolType.User, content = content, images = images,
+                    stream = stream,
                 )
+            } else if (stream != null && last != null && last.stream == null) {
+                // Locally-echoed bubble: upgrade it with the host's rendering.
+                state.messages.value = state.messages.value.dropLast(1) +
+                    last.copy(stream = stream)
             }
         }
         if (role == "toolResult") {
@@ -657,28 +664,45 @@ class PiWebSocket : WebSocketListener() {
     private fun msgEnd(state: AgentState, j: Map<*, *>) {
         val role = Js.gets(j, "role")
         if (role == "assistant") es(state, null)
-        // Custom-message entries carry host-rendered ANSI lines (the extension's
-        // own Component, rendered at our width). Show them inline verbatim.
-        val rawLines = j["ansiLines"]
-        if (rawLines is List<*>) {
-            val lines = rawLines.filterIsInstance<String>()
-            if (lines.isNotEmpty()) {
+        val stream = Js.gets(j, "stream")
+        if (role != "user") {
+            // Custom-message entries carry the host's own rendering — a stream
+            // on new hosts, ANSI lines on older ones. Show inline verbatim.
+            val lines = (j["ansiLines"] as? List<*>)?.filterIsInstance<String>()
+                ?.takeIf { it.isNotEmpty() }
+            if (stream != null || lines != null) {
                 state.messages.value = state.messages.value + ChatMessage(
                     type = MessageToolType.Custom,
                     content = Js.gets(j, "customType") ?: "",
+                    stream = stream,
                     ansiLines = lines,
                 )
             }
+            return
         }
-        // User messages with image attachments: the server forwards images
-        // as a separate `images` array, or they may be in the content array.
+        // User messages: hosts attach the rendered stream (with inline images)
+        // plus any oversize images as a structured array; older hosts send
+        // images only. The bubble usually already exists from message_start or
+        // a local echo — upgrade it in place instead of appending a duplicate.
         val userImages = parseChatImages(j["images"])
-            .ifEmpty { parseChatImages(j) } // also check content array
-        if (role == "user" && userImages.isNotEmpty()) {
-            state.messages.value = state.messages.value + ChatMessage(
+            .ifEmpty { if (stream == null) parseChatImages(j) else emptyList() }
+        if (stream == null && userImages.isEmpty()) return
+        val content = extractText(j)
+        val ml = state.messages.value.toMutableList()
+        val idx = ml.indexOfLast { it.type == MessageToolType.User }
+        val existing = ml.getOrNull(idx)
+        if (existing != null && existing.content == content) {
+            ml[idx] = existing.copy(
+                stream = stream ?: existing.stream,
+                images = if (userImages.isNotEmpty()) userImages else existing.images,
+            )
+            state.messages.value = ml
+        } else {
+            state.messages.value = ml + ChatMessage(
                 type = MessageToolType.User,
-                content = extractText(j),
+                content = content,
                 images = userImages,
+                stream = stream,
             )
         }
     }
@@ -687,19 +711,41 @@ class PiWebSocket : WebSocketListener() {
         val ev = Js.gets(j, "eventType") ?: return
         if (ev == "text_start") { state.stxt = ""; addP(state) }
         if (ev == "text_delta") { val d = Js.gets(j, "delta") ?: return; state.stxt += d; pushSt(state, state.stxt); state.assistingText.value = state.stxt }
-        if (ev == "text_end") es(state, state.stxt)
+        if (ev == "text_end") es(state, state.stxt, Js.gets(j, "stream"))
+        // Styled streaming: the host periodically re-renders the in-flight
+        // text/thinking block and ships a snapshot; show it on the Streaming
+        // bubble so markdown styling appears while the text streams.
+        if (ev == "ansi_snapshot") {
+            val stream = Js.gets(j, "stream") ?: return
+            val ml = state.messages.value.toMutableList()
+            val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
+            if (idx >= 0) { ml[idx] = ml[idx].copy(stream = stream); state.messages.value = ml }
+        }
         if (ev == "thinking_start") state.thinking.value = ""
         if (ev == "thinking_delta") { val d = Js.gets(j, "delta") ?: return; state.thinking.value += d; state.assistingText.value = state.thinking.value }
         if (ev == "thinking_end") {
             // Convert thinking text to a Thinking message type instead of dropping it
             val thinkingText = state.thinking.value
             if (thinkingText.isNotBlank()) {
-                state.messages.value = state.messages.value + ChatMessage(type = MessageToolType.Thinking, content = thinkingText)
+                state.messages.value = state.messages.value + ChatMessage(
+                    type = MessageToolType.Thinking, content = thinkingText,
+                    stream = Js.gets(j, "stream"),
+                )
             } else {
                 // Remove blank streaming placeholders
                 state.messages.value = state.messages.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
             }
             state.thinking.value = ""
+            // Drop any thinking ansi_snapshot left on the Streaming bubble so
+            // the upcoming text stream doesn't show stale thinking rendering.
+            run {
+                val ml = state.messages.value.toMutableList()
+                val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
+                if (idx >= 0 && ml[idx].stream != null) {
+                    ml[idx] = ml[idx].copy(stream = null)
+                    state.messages.value = ml
+                }
+            }
             // Don't clear stxt here: pi can interleave thinking and text streams,
             // and thinking_end often arrives AFTER text_delta has populated stxt
             // (e.g. Qwen3.6: thinking_start → text_start → text_delta → thinking_end
@@ -746,11 +792,14 @@ class PiWebSocket : WebSocketListener() {
         val isError = (j["isError"] as? Boolean) ?: false
         val bufferedContent = state.tbufs[id]?.toString().orEmpty()
         val content = if (remoteContent.isNotBlank()) remoteContent else bufferedContent
-        // Host-rendered ANSI lines for the tool's own result renderer (e.g.
-        // pi-subagents cards), rendered at our width. Shown verbatim when present.
+        // Host-rendered tool display (header + args + diff + result, with the
+        // expanded variant for tap-to-expand). Older hosts send ANSI lines for
+        // just the result renderer instead.
+        val stream = Js.gets(j, "stream")
+        val streamExpanded = Js.gets(j, "streamExpanded")
         val ansiLines = (j["ansiLines"] as? List<*>)?.filterIsInstance<String>()?.takeIf { it.isNotEmpty() }
-        // Images from tool results (e.g. `read` on image files).
-        // Server sends: {images: [{data: base64, mimeType: "image/..."}, ...]}
+        // Oversize images the host couldn't embed in the stream (or, on older
+        // hosts, all tool-result images).
         val images = parseChatImages(j["images"])
 
         val ml = state.messages.value.toMutableList()
@@ -762,6 +811,8 @@ class PiWebSocket : WebSocketListener() {
                 toolName = nm, toolArgs = ml[idx].toolArgs,
                 content = content,
                 isError = isError,
+                stream = stream,
+                streamExpanded = streamExpanded,
                 ansiLines = ansiLines,
                 images = images,
                 timestamp = ml[idx].timestamp
@@ -771,6 +822,7 @@ class PiWebSocket : WebSocketListener() {
             state.messages.value = ml + ChatMessage(
                 toolCallId = id, type = MessageToolType.ToolResult,
                 toolName = nm, content = content, isError = isError,
+                stream = stream, streamExpanded = streamExpanded,
                 ansiLines = ansiLines, images = images
             )
         }
@@ -817,7 +869,7 @@ class PiWebSocket : WebSocketListener() {
         val idx = ml.indexOfLast { it.type == MessageToolType.Streaming }
         if (idx >= 0) { ml[idx] = ml[idx].copy(content = t); state.messages.value = ml }
     }
-    private fun es(state: AgentState, finalText: String?) {
+    private fun es(state: AgentState, finalText: String?, stream: String? = null) {
         val sub = finalText ?: state.stxt
         if (sub.isNotBlank()) {
             val ml = state.messages.value.toMutableList()
@@ -825,10 +877,13 @@ class PiWebSocket : WebSocketListener() {
             // Always transition the last Streaming bubble in-place; the old
             // isEmpty() guard caused a second Assistant message to be appended
             // when the bubble had already been populated by pushSt.
+            // [stream] is the host's final rendering — it REPLACES any interim
+            // ansi_snapshot (null clears it: a stale snapshot may be missing
+            // the tail of the message, plain content is at least complete).
             if (idx >= 0) {
-                ml[idx] = ml[idx].copy(type = MessageToolType.Assistant, content = sub)
+                ml[idx] = ml[idx].copy(type = MessageToolType.Assistant, content = sub, stream = stream)
                 state.messages.value = ml
-            } else { state.messages.value = ml + ChatMessage(type = MessageToolType.Assistant, content = sub) }
+            } else { state.messages.value = ml + ChatMessage(type = MessageToolType.Assistant, content = sub, stream = stream) }
         } else {
             state.messages.value = state.messages.value.filterNot { it.type == MessageToolType.Streaming && it.content.isBlank() }
         }
@@ -863,6 +918,8 @@ class PiWebSocket : WebSocketListener() {
         val rebuilt = arr.mapNotNull { item ->
             if (item !is Map<*, *>) return@mapNotNull null
             val role = Js.gets(item, "role") ?: return@mapNotNull null
+            val stream = Js.gets(item, "stream")
+            val streamExpanded = Js.gets(item, "streamExpanded")
             val ansiLines = (item["ansiLines"] as? List<*>)
                 ?.filterIsInstance<String>()?.takeIf { it.isNotEmpty() }
             val images = parseChatImages(item["images"])
@@ -871,14 +928,17 @@ class PiWebSocket : WebSocketListener() {
                     type = MessageToolType.User,
                     content = Js.gets(item, "content") ?: "",
                     images = images,
+                    stream = stream,
                 )
                 "assistant" -> ChatMessage(
                     type = MessageToolType.Assistant,
                     content = Js.gets(item, "content") ?: "",
+                    stream = stream,
                 )
                 "thinking" -> ChatMessage(
                     type = MessageToolType.Thinking,
                     content = Js.gets(item, "content") ?: "",
+                    stream = stream,
                 )
                 "tool" -> ChatMessage(
                     type = MessageToolType.ToolResult,
@@ -887,12 +947,15 @@ class PiWebSocket : WebSocketListener() {
                     toolArgs = Js.gets(item, "toolArgs") ?: "",
                     content = Js.gets(item, "content") ?: "",
                     isError = Js.getBool(item, "isError") ?: false,
+                    stream = stream,
+                    streamExpanded = streamExpanded,
                     ansiLines = ansiLines,
                     images = images,
                 )
-                "custom" -> if (ansiLines != null) ChatMessage(
+                "custom" -> if (stream != null || ansiLines != null) ChatMessage(
                     type = MessageToolType.Custom,
                     content = Js.gets(item, "customType") ?: "",
+                    stream = stream,
                     ansiLines = ansiLines,
                 ) else null
                 else -> null

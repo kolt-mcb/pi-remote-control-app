@@ -1,5 +1,15 @@
 # Plan: Move rendering to the host — app stays a dumb TTY
 
+> **Status (June 2026): implemented.** All phases landed, with one design
+> upgrade over this plan: instead of reimplementing markdown→ANSI in
+> TypeScript, the host re-renders pi's own interactive components
+> (AssistantMessageComponent / UserMessageComponent / ToolExecutionComponent)
+> headless at the phone's width — exact terminal parity for free. The wire
+> shape is the single `stream` field (+ `streamExpanded` for tool results)
+> from Phase 3, skipping the intermediate per-type `ansiLines` step. Styled
+> streaming ships as throttled `ansi_snapshot` re-renders rather than ANSI
+> deltas. See PROTOCOL.md "Transport" for the final contract.
+
 ## Problem
 
 The Android app is a TTY terminal, but `MessageNormalizer.toStream()` does

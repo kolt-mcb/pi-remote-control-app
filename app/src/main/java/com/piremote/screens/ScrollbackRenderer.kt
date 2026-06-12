@@ -58,6 +58,8 @@ class ScrollbackRenderer {
     private fun contentHash(msg: ChatMessage): Int {
         var h = msg.content.hashCode()
         h = 31 * h + msg.toolArgs.hashCode()
+        h = 31 * h + (msg.stream?.hashCode() ?: 0)
+        h = 31 * h + (msg.streamExpanded?.hashCode() ?: 0)
         h = 31 * h + (msg.ansiLines?.hashCode() ?: 0)
         h = 31 * h + msg.images.fold(0) { acc, img -> 31 * acc + img.data.hashCode() }
         h = 31 * h + msg.isError.hashCode()

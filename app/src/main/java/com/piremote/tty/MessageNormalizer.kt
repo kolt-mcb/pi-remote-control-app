@@ -21,12 +21,28 @@ object MessageNormalizer {
 
     /** Render [msg] to a full ANSI+OSC stream wrapped/decorated for [cols]. */
     fun toStream(msg: ChatMessage, cols: Int, expanded: Boolean): String {
-        // Host-rendered ANSI lines pass through for ANY message type.
-        msg.ansiLines?.takeIf { it.isNotEmpty() }?.let { lines ->
-            return lines.joinToString("\n", postfix = "\n") { gutter(it) }
+        // Host-rendered stream: the complete presentation, shown verbatim (the
+        // host owns layout — no gutter, no client decoration). Images the host
+        // couldn't embed as OSC sequences (oversize) are appended after it.
+        val hostStream = (if (expanded) msg.streamExpanded ?: msg.stream else msg.stream)
+        if (hostStream != null) {
+            val out = StringBuilder(hostStream)
+            if (!hostStream.endsWith("\n")) out.append('\n')
+            msg.images.forEach { out.append(imageStream(it, cols)) }
+            return out.toString()
         }
 
-        // Fallback for older hosts that don't send ansiLines.
+        // Host-rendered ANSI lines pass through for ANY message type.
+        msg.ansiLines?.takeIf { it.isNotEmpty() }?.let { lines ->
+            val out = StringBuilder()
+            lines.forEach { out.appendLine(gutter(it)) }
+            // Images previously rode a separate structured array; keep showing
+            // them when an older host sends both ansiLines and images.
+            msg.images.forEach { out.append(imageStream(it, cols)) }
+            return out.toString()
+        }
+
+        // Fallback for older hosts that don't send a rendered stream.
         return when (msg.type) {
             MessageToolType.User -> userFallback(msg, cols)
             MessageToolType.Assistant -> assistantFallback(msg, cols)
