@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.piremote.*
 import com.piremote.theme.*
+import com.piremote.tty.parseAnsiLine
 
 /** Pi Terminal Styled Dialog for select() / confirm() */
 @Composable

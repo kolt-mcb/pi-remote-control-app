@@ -18,6 +18,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -27,7 +28,10 @@ import com.piremote.screens.ChatScreen
 import com.piremote.screens.SessionsScreen
 import com.piremote.screens.SelectDialog
 import com.piremote.screens.InputDialog
+import com.piremote.screens.TabletLayout
+import com.piremote.screens.TabletConnectScreen
 import com.piremote.screens.TerminalRenderView
+import com.piremote.screens.clearImageCaches
 import com.piremote.test.TestState
 import com.piremote.theme.PiRemoteTheme
 import com.piremote.theme.ThemeManager
@@ -102,13 +106,22 @@ class MainActivity : ComponentActivity() {
                     if (lastUrl.isNotBlank()) vm.setServerUrl(lastUrl)
                 }
 
-                // Back-press handling
+                // Detect tablet: width ≥ 600dp (matches WindowSizeClass.MEDIUM threshold).
+                val isTablet = LocalConfiguration.current.screenWidthDp >= 600
+
+                // Back-press handling differs by layout:
+                // Phone: Chat → Sessions → Disconnect
+                // Tablet: sidebar is always visible, so back just disconnects
                 val currentScreen by vm.connectedScreen.collectAsState()
                 if (status == ConnectionStatus.Connected) {
                     BackHandler {
-                        when (currentScreen) {
-                            ConnectedScreen.Chat -> vm.showSessionsScreen()
-                            ConnectedScreen.Sessions -> vm.disconnect()
+                        if (isTablet) {
+                            vm.disconnect()
+                        } else {
+                            when (currentScreen) {
+                                ConnectedScreen.Chat -> vm.showSessionsScreen()
+                                ConnectedScreen.Sessions -> vm.disconnect()
+                            }
                         }
                     }
                 }
@@ -143,6 +156,41 @@ class MainActivity : ComponentActivity() {
                 val inpReq = uiRequests.firstOrNull { it.method in listOf("input", "editor") }
 
                 when {
+                    status is ConnectionStatus.Connected && isTablet ->
+                        TabletLayout(
+                            vm = vm,
+                            st = st,
+                            url = url,
+                            input = inp,
+                            messages = ms,
+                            assist = assist,
+                            status = status,
+                            busy = busy,
+                            sessions = sessions,
+                            selectedSession = selectedSession,
+                            commands = commands,
+                            statuses = statuses,
+                            widgets = widgets,
+                            compacting = compacting,
+                            notifyBanners = notifyBanners,
+                            uiTitle = uiTitle,
+                            clientCount = clientCount,
+                            turnSummary = turnSummary,
+                            savedSessions = savedSessions,
+                            renderFrame = renderFrame,
+                        )
+                    isTablet ->
+                        TabletConnectScreen(
+                            vm = vm,
+                            url = url,
+                            input = inp,
+                            messages = ms,
+                            assist = assist,
+                            status = status,
+                            urlHistory = urlHistory,
+                            sessions = sessions,
+                        )
+                    // ── Phone layout (unchanged) ─────────────────
                     status == ConnectionStatus.Connected && currentScreen == ConnectedScreen.Chat ->
                         ChatScreen(vm, url, inp, ms, assist, status, busy, sessions, selectedSession,
                             commands = commands,
@@ -160,14 +208,16 @@ class MainActivity : ComponentActivity() {
                         ConnectScreen(vm, url, inp, ms, assist, status, urlHistory, sessions)
                 }
 
-                // Overlay dialogs
-                selReq?.let { req -> SelectDialog(req, ::uiRespond, ::uiCancelled) }
-                inpReq?.let { req -> InputDialog(req, ::uiRespond, ::uiCancelled) }
+                // Overlay dialogs (phone only — tablet owns its own in TabletLayout)
+                if (!isTablet) {
+                    selReq?.let { req -> SelectDialog(req, ::uiRespond, ::uiCancelled) }
+                    inpReq?.let { req -> InputDialog(req, ::uiRespond, ::uiCancelled) }
 
-                // Full-screen Terminal render overlay
-                renderFrame?.let { frame ->
-                    TerminalRenderView(frame) { value ->
-                        renderInput(frame.id, value)
+                    // Full-screen Terminal render overlay
+                    renderFrame?.let { frame ->
+                        TerminalRenderView(frame) { value ->
+                            renderInput(frame.id, value)
+                        }
                     }
                 }
                 }
@@ -180,5 +230,10 @@ class MainActivity : ComponentActivity() {
         // Do NOT disconnect here — the WS singleton survives config changes
         // (orientation) and the foreground service keeps it alive in the
         // background. Let the ViewModel or explicit user action own disconnect.
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= TRIM_MEMORY_BACKGROUND) clearImageCaches()
     }
 }

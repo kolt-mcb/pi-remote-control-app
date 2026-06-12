@@ -59,27 +59,6 @@ data class PiRemoteTheme(
     val thinkingMedium: Color = Color(0xFFD2A8FF),
     val thinkingHigh: Color = Color(0xFFFF7B72),
 
-    // Syntax
-    val codeKeyword: Color = Color(0xFFFF7B72),
-    val codeString: Color = Color(0xFFA5D6FF),
-    val codeComment: Color = Color(0xFF6E7681),
-    val codeFunction: Color = Color(0xFFD2A8FF),
-    val codeNumber: Color = Color(0xFF79C0FF),
-    val codeType: Color = Color(0xFF7EE787),
-    val codeOperator: Color = Color(0xFF79C0FF),
-    val codePunctuation: Color = Color(0xFF636C76),
-
-    // Markdown
-    val mdHeading: Color = Color(0xFFF0C674),
-    val mdLink: Color = Color(0xFF81A2BE),
-    val mdLinkUrl: Color = Color(0xFF6E7681),
-    val mdCode: Color = Color(0xFF58A6FF),
-    val mdCodeBlock: Color = Color(0xFF7EE787),
-    val mdCodeBlockBorder: Color = Color(0xFF6E7681),
-    val mdQuote: Color = Color(0xFF8B949E),
-    val mdQuoteBorder: Color = Color(0xFF6E7681),
-    val mdListBullet: Color = Color(0xFF58A6FF),
-
     // Footer
     val footerText: Color = Color(0xFF636C76),
 ) {
@@ -107,15 +86,6 @@ data class PiRemoteTheme(
             thinkingColor = Color(0xFF5A8080), thinkingBorder = Color(0xFF5A8080),
             thinkingLow = Color(0xFF547DA7), thinkingMedium = Color(0xFF5A8080),
             thinkingHigh = Color(0xFF875F87),
-            codeKeyword = Color(0xFF0000FF), codeString = Color(0xFFA31515),
-            codeComment = Color(0xFF008000), codeFunction = Color(0xFF795E26),
-            codeNumber = Color(0xFF098658), codeType = Color(0xFF267F99),
-            codeOperator = Color(0xFF000000), codePunctuation = Color(0xFF000000),
-            mdHeading = Color(0xFF9A7326), mdLink = Color(0xFF547DA7),
-            mdLinkUrl = Color(0xFF767676), mdCode = Color(0xFF5A8080),
-            mdCodeBlock = Color(0xFF588458), mdCodeBlockBorder = Color(0xFF6C6C6C),
-            mdQuote = Color(0xFF6C6C6C), mdQuoteBorder = Color(0xFF6C6C6C),
-            mdListBullet = Color(0xFF588458),
             footerText = Color(0xFF767676),
         )
     }

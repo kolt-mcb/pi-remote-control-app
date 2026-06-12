@@ -52,27 +52,6 @@ val thinkingLow: Color get() = ThemeManager.current.thinkingLow
 val thinkingMedium: Color get() = ThemeManager.current.thinkingMedium
 val thinkingHigh: Color get() = ThemeManager.current.thinkingHigh
 
-// ▸ Syntax
-val codeKeyword: Color get() = ThemeManager.current.codeKeyword
-val codeString: Color get() = ThemeManager.current.codeString
-val codeComment: Color get() = ThemeManager.current.codeComment
-val codeFunction: Color get() = ThemeManager.current.codeFunction
-val codeNumber: Color get() = ThemeManager.current.codeNumber
-val codeType: Color get() = ThemeManager.current.codeType
-val codeOperator: Color get() = ThemeManager.current.codeOperator
-val codePunctuation: Color get() = ThemeManager.current.codePunctuation
-
-// ▸ Markdown
-val mdHeading: Color get() = ThemeManager.current.mdHeading
-val mdLink: Color get() = ThemeManager.current.mdLink
-val mdLinkUrl: Color get() = ThemeManager.current.mdLinkUrl
-val mdCode: Color get() = ThemeManager.current.mdCode
-val mdCodeBlock: Color get() = ThemeManager.current.mdCodeBlock
-val mdCodeBlockBorder: Color get() = ThemeManager.current.mdCodeBlockBorder
-val mdQuote: Color get() = ThemeManager.current.mdQuote
-val mdQuoteBorder: Color get() = ThemeManager.current.mdQuoteBorder
-val mdListBullet: Color get() = ThemeManager.current.mdListBullet
-
 // ▸ Footer
 val footerBg: Color get() = ThemeManager.current.footerBg
 val footerText: Color get() = ThemeManager.current.footerText

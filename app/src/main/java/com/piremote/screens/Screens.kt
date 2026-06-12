@@ -42,8 +42,13 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.asImageBitmap
 import com.piremote.theme.*
+import com.piremote.tty.parseAnsiLine
+import com.piremote.tty.parseEdits
+import com.piremote.tty.parseToolArgs
+import com.piremote.tty.parseWriteContent
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlinx.coroutines.delay
@@ -643,7 +648,7 @@ fun SessionsScreen(
 @Composable
 fun SavedSessionRow(s: SavedSession, onTap: () -> Unit) {
     val label = s.name.ifBlank { s.firstMessage }.ifBlank { s.path.substringAfterLast('/') }
-    val trimmed = if (label.length > 40) label.take(39) + "…" else label
+    val trimmed = sessionLabel(label)
     val whenStr = sessionTime(s.modified)
 
     // Status badge color + icon
@@ -719,7 +724,7 @@ fun SessionCard(
     var showCloseConfirm by remember { mutableStateOf(false) }
 
     PiBox(
-        header = session.name.take(16),
+        header = sessionLabel(session.name, 16),
         borderColor = if (isSelected) accent else if (isBusy) thinkingBorder.copy(alpha = 0.7f) else borderMuted
     ) {
         Column(
@@ -797,7 +802,7 @@ fun SessionCard(
             title = { Text("Close session", fontFamily = piMono, fontSize = 14.sp) },
             text = {
                 Text(
-                    "This will quit peer agent:\n${session.name.take(30)}\n\nThis cannot be undone.",
+                    "This will quit peer agent:\n${sessionLabel(session.name, 30)}\n\nThis cannot be undone.",
                     fontFamily = piMono, fontSize = 12.sp
                 )
             },
@@ -870,10 +875,15 @@ fun PiFooter(
         HorizontalDivider(color = border, thickness = 1.dp)
         Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             val active = sessions.find { it.id == selectedSession }
+            // Single ellipsized line: session names derive from the first user
+            // message on the host, which can be arbitrarily long pasted text.
             Text(
                 "session: ${active?.name ?: "none"}",
                 color = if (active?.status == "busy") thinkingBorder else accent,
-                fontFamily = piMono, fontSize = 10.sp
+                fontFamily = piMono, fontSize = 10.sp,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(2f, fill = false)
             )
             Text("agents: ${sessions.size}", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
             if (clientCount > 0) Text("connected: $clientCount", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
@@ -957,7 +967,15 @@ fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect:
                 horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically
             ) {
                 Box(modifier = Modifier.size(5.dp).background(if (isActive) thinkingBorder else success, CircleShape))
-                Text(sess.name, color = textPrimary, fontFamily = piMono, fontSize = 11.sp)
+                // Session names derive from the first user message on the host —
+                // can be a multi-line paste. One ellipsized line, newlines stripped.
+                Text(
+                    sessionLabel(sess.name, 60),
+                    color = textPrimary, fontFamily = piMono, fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(3f, fill = false)
+                )
                 Text(if (isActive) "busy" else "idle",
                     color = if (isActive) thinkingBorder else textMuted, fontFamily = piMono, fontSize = 10.sp)
                 Spacer(Modifier.weight(1f))
@@ -988,7 +1006,7 @@ fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect:
                     Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(modifier = Modifier.size(5.dp).background(if (isActive) thinkingBorder else success, CircleShape))
                         Text(
-                            sess.name.take(10),
+                            sessionLabel(sess.name, 10),
                             color = if (isSelected) textPrimary else textSecondary,
                             fontFamily = piMono, fontSize = 10.sp,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
@@ -1015,14 +1033,16 @@ fun ChatScreen(
     notifyBanners: List<BannerMessage> = emptyList(),
     uiTitle: String? = null,
     clientCount: Int = 0,
-    turnSummary: PiWebSocket.TurnSummary? = null
+    turnSummary: PiWebSocket.TurnSummary? = null,
+    showSessionSelector: Boolean = true,
 ) {
     val ls = rememberLazyListState()
-    val cnt = messages.size + if (assist.isNotBlank()) 2 else 0
-    LaunchedEffect(cnt) {
-        if (cnt > 0 && ls.layoutInfo.totalItemsCount > 0) {
-            ls.animateScrollToItem(cnt.coerceAtMost(ls.layoutInfo.totalItemsCount - 1))
-        }
+    // Pin to bottom when a message arrives OR the streaming tail grows —
+    // block count inside the tail message changes with content length.
+    val scrollKey = Triple(messages.size, messages.lastOrNull()?.content?.length ?: 0, assist.length)
+    LaunchedEffect(scrollKey) {
+        val last = ls.layoutInfo.totalItemsCount - 1
+        if (last > 0) ls.animateScrollToItem(last)
     }
 
     // Mode state lifted up so PiWorkingStatus can flip it on tap-to-interrupt.
@@ -1042,7 +1062,7 @@ fun ChatScreen(
     Column(modifier = Modifier.fillMaxSize().background(bg).imePadding()) {
         PiHeader(status, busy, { vm.disconnect() }, uiTitle?.take(30))
 
-        if (sessions.isNotEmpty()) {
+        if (showSessionSelector && sessions.isNotEmpty()) {
             PiSessionSelector(
                 sessions,
                 if (selectedSession.isNotBlank()) selectedSession else sessions.firstOrNull()?.id ?: "",
@@ -1054,55 +1074,28 @@ fun ChatScreen(
         widgets.forEach { (key, lines) -> WidgetPanel(key, lines) }
         notifyBanners.forEach { NotifyBanner(it.content, it.type) }
 
-        // Chat Messages Area — flat scrollback, no card padding.
+        // Chat Messages Area — unified TTY scrollback, no bubbles.
         BoxWithConstraints(modifier = Modifier.weight(1f)) {
-            // Report our content width in monospace columns so the host re-renders
-            // extension components to fit the phone. piMono advance ≈ 0.6em.
-            val density = LocalDensity.current
-            val cols = remember(maxWidth) {
-                with(density) {
-                    val charDp = 12.sp.toDp().value * 0.6f
-                    if (charDp > 0f) (maxWidth.value / charDp).toInt().coerceIn(20, 200) else 60
-                }
-            }
-            LaunchedEffect(cols) { vm.reportViewport(cols) }
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                state = ls,
-                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 6.dp),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                // Empty + connected → greet like pi's terminal startup header.
-                if (messages.isEmpty() && assist.isBlank() && status is ConnectionStatus.Connected) {
-                    item(key = "startup") { PiStartupHeader() }
-                }
-                itemsIndexed(messages, key = { idx, msg -> "${idx}_${msg.id}_${msg.timestamp}" }) { _, msg ->
-                    PiMessageBubble(msg)
-                }
-                // The trailing Streaming bubble (rendered as PiAssistantMessage when
-                // its content is non-blank) already shows the live text, since
-                // text_delta updates the bubble via pushSt. Rendering `assist` here
-                // too would duplicate the answer on screen. Only show this preview
-                // for the brief pure-thinking window before text_start fires, when
-                // the bubble doesn't exist yet or is still empty.
-                val bubbleHasLiveText = messages.lastOrNull()?.let {
-                    it.type == MessageToolType.Streaming && it.content.isNotBlank()
-                } == true
-                if (assist.isNotBlank() && !bubbleHasLiveText) {
-                    item(key = "streaming") {
-                        Row(verticalAlignment = Alignment.Bottom, modifier = Modifier.padding(start = 12.dp, top = 2.dp, end = 4.dp, bottom = 2.dp)) {
-                            PiMarkdown(
-                                text = assist,
-                                baseColor = assistantText,
-                                baseSize = 13.sp,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            PiBlinkBlock(color = accent)
-                        }
+            // Measured monospace metrics: the same column count feeds the host
+            // (so extension components re-render to fit) and local wrapping.
+            val metrics = rememberTtyMetrics(maxWidth)
+            LaunchedEffect(metrics.cols) { vm.reportViewport(metrics.cols) }
+            val context = LocalContext.current
+            TtyScrollback(
+                messages = messages,
+                assist = assist,
+                busy = busy,
+                showStartupHeader = messages.isEmpty() && assist.isBlank() && status is ConnectionStatus.Connected,
+                metrics = metrics,
+                listState = ls,
+                onOpenLink = { url ->
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                        )
                     }
-                }
-                item(key = "spacer") { Spacer(Modifier.height(6.dp)) }
-            }
+                },
+            )
         }
 
         // Animated working status line — Claude Code "✻ Pondering…" feel.
@@ -1257,7 +1250,7 @@ fun PiTerminalInput(
     val placeholder = when {
         steerMode -> "Steer agent mid-flight…"
         followUpMode -> "Follow-up to previous turn…"
-        busy -> "(agent busy)"
+        busy -> "(agent busy — tap to steer)"
         else -> ""
     }
 
@@ -1315,7 +1308,29 @@ fun PiTerminalInput(
                 }
             }
         }
-        // Row: `>` + TextField + image picker
+        // One submit path for the IME Send key AND the on-screen send button.
+        // Slash commands always run as commands — even mid-run in steer mode.
+        val submit = {
+            val trimmed = input.trim()
+            when {
+                trimmed.startsWith("/") && trimmed.length > 1 -> {
+                    val spaceIdx = trimmed.indexOf(' ')
+                    val cmd = if (spaceIdx > 1) trimmed.substring(1, spaceIdx) else trimmed.substring(1)
+                    val args = if (spaceIdx > 1) trimmed.substring(spaceIdx + 1).trim() else ""
+                    vm.sendSlashCommand(cmd, args)
+                    vm.setInputText("")
+                    setSteerMode(false)
+                }
+                steerMode || (busy && !followUpMode) -> { vm.sendSteer(); setSteerMode(false) }
+                followUpMode -> { vm.sendFollowUp(); setFollowUpMode(false) }
+                trimmed.isNotEmpty() || pendingImages.value.isNotEmpty() -> {
+                    if (pendingImages.value.isNotEmpty()) vm.sendPromptWithImages()
+                    else vm.sendPrompt()
+                }
+                else -> {}
+            }
+        }
+        // Row: `>` + TextField + send + image picker
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -1330,7 +1345,13 @@ fun PiTerminalInput(
             placeholder = {
                 if (placeholder.isNotBlank()) Text(placeholder, color = textMuted, fontFamily = piMono, fontSize = 13.sp)
             },
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .weight(1f)
+                // Tapping the field while the agent runs = steering, like typing
+                // in pi's terminal mid-run. No separate "tap to interrupt" needed.
+                .onFocusChanged { st ->
+                    if (st.isFocused && busy && !steerMode && !followUpMode) setSteerMode(true)
+                },
             maxLines = 4, singleLine = false,
             colors = TextFieldDefaults.colors(
                 focusedContainerColor = bg, unfocusedContainerColor = bg,
@@ -1341,31 +1362,34 @@ fun PiTerminalInput(
             ),
             textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 13.sp),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            enabled = !busy || steerMode || followUpMode,
-            keyboardActions = KeyboardActions(onSend = {
-                when {
-                    steerMode -> { vm.sendSteer(); setSteerMode(false) }
-                    followUpMode -> { vm.sendFollowUp(); setFollowUpMode(false) }
-                    input.trim().startsWith("/") -> {
-                        val trimmed = input.trim()
-                        val spaceIdx = trimmed.indexOf(' ')
-                        val cmd = if (spaceIdx > 1) trimmed.substring(1, spaceIdx) else trimmed.substring(1)
-                        val args = if (spaceIdx > 1) trimmed.substring(spaceIdx + 1).trim() else ""
-                        vm.sendSlashCommand(cmd, args)
-                    }
-                    else -> {
-                        if (pendingImages.value.isNotEmpty()) vm.sendPromptWithImages()
-                        else vm.sendPrompt()
-                    }
-                }
-            })
+            keyboardActions = KeyboardActions(onSend = { submit() })
         )
+        // Visible send button — multiline fields make many keyboards show
+        // Enter-as-newline instead of an IME Send key, so don't rely on it.
+        if (input.isNotBlank() || pendingImages.value.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clickable { submit() },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "⏎",
+                    color = cursorColor,
+                    fontFamily = piMono,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
         // Image picker button — opens system image picker
         Box(
             modifier = Modifier
                 .size(32.dp)
-                .clickable(enabled = !busy && !steerMode && !followUpMode) { 
-                    imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) 
+                // Always available: images picked while busy queue as pending
+                // thumbnails and ride along with the next prompt.
+                .clickable {
+                    imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
             contentAlignment = Alignment.Center
         ) {
@@ -1475,353 +1499,15 @@ fun PiBlinkSigil(sigil: String, color: Color, active: Boolean) {
     )
 }
 
-// ── Pi Terminal Message Bubbles ────────────────────────────────────────
-
-@Composable
-fun PiMessageBubble(msg: ChatMessage) {
-    when (msg.type) {
-        MessageToolType.User -> PiUserMessage(msg)
-        MessageToolType.Assistant -> PiAssistantMessage(msg)
-        MessageToolType.ToolResult -> PiToolMessage(msg)
-        MessageToolType.Streaming -> if (msg.content.isNotBlank()) PiAssistantMessage(msg) else Unit
-        MessageToolType.Thinking -> PiThinkingMessage(msg)
-        MessageToolType.Custom -> PiCustomMessage(msg)
-    }
-}
-
-/** Decode a base64 image string to an ImageBitmap. Returns null on failure. */
-@Composable
-fun base64ToBitmap(chatImage: ChatImage): androidx.compose.ui.graphics.ImageBitmap? {
-    return remember(chatImage.data) {
-        try {
-            val bytes = Base64.decode(chatImage.data, Base64.NO_WRAP)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-        } catch (_: Exception) { null }
-    }
-}
-
-/** Display images inline in a message bubble. */
-@Composable
-fun InlineImages(images: List<ChatImage>, modifier: Modifier = Modifier) {
-    if (images.isEmpty()) return
-    Column(modifier = modifier) {
-        images.forEachIndexed { i, img ->
-            val bitmap = base64ToBitmap(img)
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
-                    contentDescription = "Image ${i + 1}",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 300.dp)
-                        .padding(top = 2.dp),
-                    contentScale = androidx.compose.ui.layout.ContentScale.FillWidth
-                )
-            } else {
-                Text("[image]", color = textMuted, fontFamily = piMono, fontSize = 10.sp,
-                    modifier = Modifier.padding(top = 2.dp, start = 4.dp))
-            }
-        }
-    }
-}
-
-/** Render host-supplied ANSI lines (an extension's own Component, rendered at our
- *  width) verbatim — full color/background fidelity, reflowed to the phone.
- *  Reuses [parseAnsiLine]/[buildAnsiText] from TerminalView. */
-@Composable
-fun AnsiBlock(lines: List<String>, modifier: Modifier = Modifier) {
-    // Memoize parsed ANSI segments — parseAnsiLine does substringing and SGR
-    // decoding; caching avoids repeated work on every recomposition.
-    val parsed = remember(lines) { lines.map { line -> line to parseAnsiLine(line) } }
-    Column(modifier = modifier) {
-        parsed.forEach { (_, segments) ->
-            if (segments.all { it.first.isEmpty() }) {
-                Spacer(Modifier.height(6.dp))
-            } else {
-                Text(
-                    buildAnsiText(segments),
-                    fontFamily = piMono,
-                    fontSize = 12.sp,
-                    softWrap = false,
-                )
-            }
-        }
-    }
-}
-
-/** A custom-message entry whose presentation was rendered by its own extension. */
-@Composable
-fun PiCustomMessage(msg: ChatMessage) {
-    val lines = msg.ansiLines ?: return
-    AnsiBlock(lines, Modifier.fillMaxWidth().padding(start = 8.dp, top = 2.dp, end = 4.dp, bottom = 2.dp))
-}
-
-/** A tool result rendered by the tool's own renderResult (e.g. pi-subagents cards). */
-@Composable
-fun PiRenderedTool(msg: ChatMessage) {
-    val lines = msg.ansiLines ?: return
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp, horizontal = 4.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("●", color = if (msg.isError) error else toolBorder, fontFamily = piMono, fontSize = 13.sp)
-            Text(msg.toolName.ifBlank { "Tool" }, color = textPrimary, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-        }
-        AnsiBlock(lines, Modifier.padding(start = 8.dp, top = 2.dp))
-    }
-}
-
-/**
- * User message — flat scrollback echo, no border, prefixed with `> `.
- * Long-press the row to surface the timestamp (kept off by default for density).
- */
-@Composable
-fun PiUserMessage(msg: ChatMessage) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp, horizontal = 4.dp)) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.Top
-        ) {
-            Text("> ", color = accent, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            if (msg.content.isNotBlank()) {
-                Text(msg.content, color = userBubbleText, fontFamily = piMono, fontSize = 13.sp, modifier = Modifier.weight(1f))
-            }
-        }
-        // Show attached images inline
-        InlineImages(msg.images, modifier = Modifier.padding(start = 4.dp))
-    }
-}
-
-/**
- * Assistant prose — flat, two-space indent, no labels, no border, no timestamp.
- * Markdown is rendered with pi-themed styling (headers, code, bold, etc.)
- * so output reads like pi's own terminal output instead of raw `**...**`.
- */
-@Composable
-fun PiAssistantMessage(msg: ChatMessage) {
-    PiMarkdown(
-        text = msg.content,
-        baseColor = assistantText,
-        baseSize = 13.sp,
-        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, top = 2.dp, end = 4.dp, bottom = 2.dp)
-    )
-}
-
-/**
- * Thinking — `✻ Thinking…` header, dim italic body, tap-to-expand.
- * Collapsed by default to keep the scrollback dense.
- */
-@Composable
-fun PiThinkingMessage(msg: ChatMessage) {
-    var expanded by remember { mutableStateOf(false) }
-    Column(
-        modifier = Modifier.fillMaxWidth()
-            .clickable { expanded = !expanded }
-            .padding(vertical = 2.dp, horizontal = 4.dp)
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("✻", color = thinkingBorder, fontFamily = piMono, fontSize = 11.sp)
-            Text(
-                if (expanded) "Thinking…" else "Thinking… (tap)",
-                color = thinkingBorder, fontFamily = piMono, fontSize = 11.sp,
-                fontStyle = FontStyle.Italic, fontWeight = FontWeight.Bold
-            )
-        }
-        if (expanded) {
-            Text(
-                "  " + msg.content,
-                color = thinkingBorder.copy(alpha = 0.7f),
-                fontFamily = piMono, fontSize = 11.sp, fontStyle = FontStyle.Italic,
-                modifier = Modifier.padding(top = 2.dp)
-            )
-        }
-    }
-}
-
-/**
- * Tool call — Claude Code-style one-liner.
- *
- *   ● Tool(arg)
- *   ⎿  first line of result…
- *
- * Tap row to expand to full content; long-press to copy. No box, no chrome —
- * matches the flat scrollback feel. Tap target padded to ~40dp for touch.
- */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun PiToolMessage(msg: ChatMessage) {
-    // If the host rendered the tool's own result Component, show that verbatim.
-    if (msg.ansiLines != null) { PiRenderedTool(msg); return }
-    val clipboard = LocalContext.current.getSystemService(ClipboardManager::class.java)
-    var copied by remember { mutableStateOf(false) }
-    var expanded by remember { mutableStateOf(false) }
-    val isCode = isCodeContent(msg.content)
-    val lineCount = countLines(msg.content)
-
-    val dotColor = when {
-        msg.isError -> error
-        else -> toolBorder
-    }
-    val argText = remember(msg.toolArgs) { if (msg.toolArgs.isNotBlank()) parseToolArgs(msg.toolArgs) else "" }
-    val firstLine = remember(msg.content) { msg.content.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty() }
-
-    LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1500); copied = false } }
-
-    Column(
-        modifier = Modifier.fillMaxWidth()
-            .combinedClickable(
-                onClick = { expanded = !expanded },
-                onLongClick = {
-                    clipboard?.setPrimaryClip(ClipData.newPlainText("tool", msg.content))
-                    copied = true
-                }
-            )
-            .padding(vertical = 3.dp, horizontal = 4.dp)
-    ) {
-        // ● Tool(args)
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("●", color = dotColor, fontFamily = piMono, fontSize = 13.sp)
-            Text(msg.toolName.ifBlank { "Tool" }, color = textPrimary, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            if (argText.isNotBlank()) {
-                val shortArgs = argText.take(40) + if (argText.length > 40) "…" else ""
-                Text("($shortArgs)", color = textMuted, fontFamily = piMono, fontSize = 12.sp, maxLines = 1)
-            }
-            if (msg.isError) Text("error", color = error, fontFamily = piMono, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-            if (msg.images.isNotEmpty()) Text("🖼 ${msg.images.size}", color = accent, fontFamily = piMono, fontSize = 10.sp)
-            Spacer(Modifier.weight(1f))
-            if (copied) Text("copied", color = toolBorder, fontFamily = piMono, fontSize = 10.sp)
-        }
-        // Inline images from tool results (e.g. `read` on image files)
-        if (msg.images.isNotEmpty()) {
-            InlineImages(msg.images, modifier = Modifier.padding(start = 16.dp, top = 2.dp))
-        }
-
-        // For edit / multiEdit / write tools the actual change lives in the
-        // tool's args (oldText / newText / content), not in the result content
-        // (which is just "Successfully replaced N block(s)"). Render the
-        // structured diff when expanded; the collapsed preview stays as the
-        // result string so it still shows "Successfully replaced 1 block(s)".
-        val tn = remember(msg.toolName) { msg.toolName.lowercase() }
-        val isEditLike = tn == "edit" || tn == "multiedit" || tn == "multi_edit"
-        val isWrite = tn == "write"
-        val hunks = remember(msg.toolArgs, isEditLike) { if (isEditLike) parseEdits(msg.toolArgs) else emptyList() }
-        val writeContent = remember(msg.toolArgs, isWrite) { if (isWrite) parseWriteContent(msg.toolArgs) else null }
-
-        // ⎿ first-line excerpt (collapsed) OR full body (expanded)
-        if (msg.content.isNotBlank() || hunks.isNotEmpty() || writeContent != null) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.Top, modifier = Modifier.padding(top = 1.dp)) {
-                Text("  ⎿", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
-                if (expanded) {
-                    when {
-                        hunks.isNotEmpty() -> Column {
-                            hunks.forEach { (oldT, newT) -> PiEditHunk(oldT, newT) }
-                            if (msg.content.isNotBlank()) Text(msg.content, color = textMuted, fontFamily = piMono, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
-                        }
-                        writeContent != null -> Column {
-                            PiWriteContent(writeContent)
-                            if (msg.content.isNotBlank()) Text(msg.content, color = textMuted, fontFamily = piMono, fontSize = 10.sp, modifier = Modifier.padding(top = 2.dp))
-                        }
-                        isCode && lineCount > 1 -> PiCodeBlock(msg.content.take(3000))
-                        else -> Text(msg.content, color = textSecondary, fontFamily = piMono, fontSize = 12.sp)
-                    }
-                } else {
-                    val preview = when {
-                        hunks.isNotEmpty() -> "${hunks.size} edit${if (hunks.size == 1) "" else "s"} · tap to view diff"
-                        writeContent != null -> "${writeContent.count { it == '\n' } + 1} lines · tap to view"
-                        else -> firstLine.take(80) + if (firstLine.length > 80 || lineCount > 1) "…" else ""
-                    }
-                    Text(preview, color = textMuted, fontFamily = piMono, fontSize = 12.sp, maxLines = 1)
-                }
-            }
-        }
-    }
-}
-
-/**
- * Parse pi's edit / multiEdit args (`{path, edits: [{oldText, newText}, ...]}`)
- * into pairs of (oldText, newText). Returns empty list on any parse failure or
- * non-edit-shaped args — caller falls back to the existing result rendering.
- */
-fun parseEdits(argsJson: String): List<Pair<String, String>> {
-    if (argsJson.isBlank()) return emptyList()
-    val m = try { JP.p(argsJson) } catch (_: Throwable) { null } ?: return emptyList()
-    val arr = m["edits"] as? List<*> ?: return emptyList()
-    return arr.mapNotNull { e ->
-        if (e !is Map<*, *>) return@mapNotNull null
-        val oldT = Js.gets(e, "oldText") ?: Js.gets(e, "old_str") ?: return@mapNotNull null
-        val newT = Js.gets(e, "newText") ?: Js.gets(e, "new_str") ?: ""
-        oldT to newT
-    }
-}
-
-/**
- * Parse pi's write args (`{path, content}`) and return the content string,
- * or null if absent.
- */
-fun parseWriteContent(argsJson: String): String? {
-    if (argsJson.isBlank()) return null
-    val m = try { JP.p(argsJson) } catch (_: Throwable) { null } ?: return null
-    return Js.gets(m, "content")
-}
-
-/** Code block with line numbers */
-@Composable
-fun PiCodeBlock(content: String) {
-    val lines = remember(content) { content.split("\n").mapIndexed { idx, line -> idx + 1 to line } }
-    val displayLines = lines.take(50)
-    val moreCount = lines.size - displayLines.size
-
-    Column {
-        for ((num, line) in displayLines) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(num.toString(), color = textMuted.copy(alpha = 0.3f), fontFamily = piMono, fontSize = 9.sp,
-                    modifier = Modifier.width(18.dp), textAlign = TextAlign.End)
-                PiAnnotatedLine(line)
-            }
-        }
-        if (moreCount > 0) Text("  ... $moreCount more lines", color = textMuted, fontFamily = piMono, fontSize = 9.sp, fontStyle = FontStyle.Italic)
-    }
-}
-
-@Composable
-fun PiAnnotatedLine(line: String) {
-    val isComment = line.startsWith("//") || line.startsWith("/*") || line.startsWith(" *") || line.startsWith("*/")
-    val isBlank = line.isBlank()
-    val isKeyword = try {
-        val trimmed = line.trimStart()
-        KEYWORDS.any { kw ->
-            trimmed.startsWith(kw) && (trimmed.length == kw.length || !Character.isLetterOrDigit(trimmed[kw.length]))
-        }
-    } catch (_: Exception) { false }
-    val isNumber = NUMBER_RE.matches(line.trimStart())
-
-    val color = when {
-        isComment -> codeComment
-        isBlank -> textMuted
-        isKeyword -> codeKeyword
-        isNumber -> codeNumber
-        line.contains('"') -> codeString
-        else -> textSecondary
-    }
-
-    Text(line, color = color, fontFamily = piMono, fontSize = 11.sp)
-}
-
 // ── Helpers ────────────────────────────────────────────────────────────
 
-fun parseToolArgs(json: String): String {
-    return try {
-        val j = JP.p(json)
-        j?.let { m ->
-            val path = Js.gets(m, "path") ?: Js.gets(m, "file") ?: ""
-            val cmd = Js.gets(m, "cmd") ?: Js.gets(m, "command") ?: ""
-            val name = Js.gets(m, "name") ?: ""
-            if (path.isNotBlank()) path
-            else if (cmd.isNotBlank()) cmd
-            else if (name.isNotBlank()) name
-            else json.take(60)
-        } ?: json.take(60)
-    } catch (_: Exception) {
-        json.take(60)
-    }
+/**
+ * Sanitize a host-derived session name for one-line display. Names come from
+ * the first user message, which can be a multi-line paste of arbitrary text.
+ */
+fun sessionLabel(name: String, max: Int = 40): String {
+    val flat = name.replace('\n', ' ').replace('\r', ' ').trim()
+    return if (flat.length > max) flat.take(max - 1) + "…" else flat
 }
 
 /** Pi-style session time formatting */
@@ -1839,13 +1525,3 @@ fun sessionTime(ts: Long): String {
     return fullTimeFormat.format(java.util.Date(ts))
 }
 
-// ── Code annotation constants (pre-compiled, shared across all calls) ──
-
-private val KEYWORDS = setOf(
-    "class", "interface", "object", "enum", "sealed", "data", "abstract",
-    "val", "var", "fun", "package", "import", "override", "constructor",
-    "return", "if", "else", "when", "for", "while", "do", "is", "in",
-    "as", "by", "companion", "suspend", "where", "public", "private",
-    "protected", "static", "fn", "let", "mut", "pub", "use", "const"
-)
-private val NUMBER_RE = Regex("^[0-9]+\\.?[0-9]*$")
