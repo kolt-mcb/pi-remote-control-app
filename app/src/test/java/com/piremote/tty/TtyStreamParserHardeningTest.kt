@@ -62,4 +62,27 @@ class TtyStreamParserHardeningTest {
         assertFalse("a dropped kitty train must not emit an image",
             blocks.any { it is TtyBlock.Image })
     }
+
+    @Test fun kitty_reassembles_pitui_chunks_without_id_on_continuations() {
+        // pi-tui's encodeKitty puts i=<id> only on the FIRST chunk; continuation
+        // chunks carry only m=/data. They must reassemble onto the open transmission.
+        val s = "${esc}_Ga=T,f=100,i=5,m=1;iVBOR$st" +
+                "${esc}_Gm=1;w0KGg$st" +
+                "${esc}_Gm=0;oAAAANSUhEUg==$st"
+        val img = TtyStreamParser.parse(s).filterIsInstance<TtyBlock.Image>().single()
+        assertEquals("iVBORw0KGgoAAAANSUhEUg==", img.base64)
+    }
+
+    @Test fun parseMirrorLine_extracts_kitty_image() {
+        // A mirror line carrying a (chunked) kitty sequence → an image render item.
+        val line = "${esc}_Ga=T,f=100,i=9,m=1;iVBOR$st${esc}_Gm=0;w0KGgoAAAANSUhEUg==$st"
+        val item = parseMirrorLine(line)
+        assertTrue(item is MirrorItem.Img)
+        assertEquals("iVBORw0KGgoAAAANSUhEUg==", (item as MirrorItem.Img).image.base64)
+    }
+
+    @Test fun parseMirrorLine_plain_text_is_a_line() {
+        val item = parseMirrorLine("${esc}[31mjust text${esc}[0m")
+        assertTrue(item is MirrorItem.Line)
+    }
 }

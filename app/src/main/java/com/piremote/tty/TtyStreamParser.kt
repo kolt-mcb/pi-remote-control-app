@@ -46,6 +46,10 @@ object TtyStreamParser {
         // Their `a`-less continuation chunks must be skipped, not treated as a fresh
         // transmission — otherwise a partial payload resurrects as a phantom image.
         private val droppedKitty = HashSet<Int>()
+        // The id of the currently-open kitty transmission. pi-tui's chunker puts
+        // i=<id> only on the FIRST chunk; continuation chunks carry only m=/data
+        // (no i, no a). Route those to this id instead of a phantom id 0.
+        private var currentKittyId: Int? = null
 
         fun parse(stream: String): List<TtyBlock> {
             val n = stream.length
@@ -241,19 +245,28 @@ object TtyStreamParser {
                 if (eq < 0) null else kv.substring(0, eq) to kv.substring(eq + 1)
             }.toMap()
 
-            val id = controls["i"]?.toIntOrNull() ?: 0
-            val action = controls["a"] ?: "T"
+            val a = controls["a"]
+            val hasI = controls.containsKey("i")
+            // A pure continuation chunk (pi-tui style) has neither i nor a — it
+            // belongs to the currently-open transmission.
+            val isPureContinuation = !hasI && a == null
+            val id = when {
+                hasI -> controls["i"]?.toIntOrNull() ?: 0
+                isPureContinuation && currentKittyId != null -> currentKittyId!!
+                else -> 0
+            }
+            val action = a ?: "T"
             val more = controls["m"] == "1"
 
             // Only transmit+display of PNG data is supported; anything else
             // (placements, deletion, animation, compression, raw formats) drops.
-            if (controls["o"] == "z") { kitty.remove(id); droppedKitty.add(id); return next }
-            val isContinuation = kitty.containsKey(id) && controls["a"] == null
+            if (controls["o"] == "z") { kitty.remove(id); droppedKitty.add(id); if (currentKittyId == id) currentKittyId = null; return next }
+            val isContinuation = kitty.containsKey(id) && a == null
             if (!isContinuation) {
                 // A continuation chunk (no explicit `a`) of a train we already
                 // rejected: skip it instead of starting a new transmission.
-                if (controls["a"] == null && id in droppedKitty) {
-                    if (!more) droppedKitty.remove(id)
+                if (a == null && id in droppedKitty) {
+                    if (!more) { droppedKitty.remove(id); if (currentKittyId == id) currentKittyId = null }
                     return next
                 }
                 if (action != "T" && action != "t") { droppedKitty.add(id); return next }
@@ -265,14 +278,16 @@ object TtyStreamParser {
                     cols = controls["c"]?.toIntOrNull(),
                     rows = controls["r"]?.toIntOrNull(),
                 )
+                currentKittyId = id   // this is now the open transmission
             }
 
             val accum = kitty[id] ?: return next
             accum.data.append(payload.filterNot { it == '\n' || it == '\r' || it == ' ' })
-            if (accum.data.length > MAX_IMAGE_PAYLOAD) { kitty.remove(id); return next }
+            if (accum.data.length > MAX_IMAGE_PAYLOAD) { kitty.remove(id); if (currentKittyId == id) currentKittyId = null; return next }
 
             if (!more) {
                 kitty.remove(id)
+                if (currentKittyId == id) currentKittyId = null
                 val base64 = accum.data.toString()
                 if (base64.isNotEmpty() && isBase64(base64)) {
                     emitImage(TtyBlock.Image(

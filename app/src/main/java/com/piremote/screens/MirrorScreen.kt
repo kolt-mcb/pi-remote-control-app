@@ -1,10 +1,12 @@
 package com.piremote.screens
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.rememberScrollState
@@ -13,7 +15,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
@@ -21,7 +25,10 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import com.piremote.MirrorFrame
-import com.piremote.tty.parseAnsiLine
+import com.piremote.theme.textMuted
+import com.piremote.tty.MirrorItem
+import com.piremote.tty.TtyBlock
+import com.piremote.tty.parseMirrorLine
 import kotlinx.coroutines.withTimeoutOrNull
 
 private const val ESC = "\u001b"
@@ -104,23 +111,50 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
                 },
             ) {
                 // Per-line memoization: frames mostly repeat (a spinner animates
-                // one line); parsing + AnnotatedString building only run for lines
-                // whose raw text changed, and unchanged Text nodes skip recompose.
+                // one line); parsing only runs for lines whose raw text changed,
+                // and unchanged nodes skip recompose. A line carrying an inline
+                // image (kitty/OSC 1337) renders as an image; the rest is text.
                 frame.lines.forEachIndexed { idx, raw ->
                     key(idx) {
-                        val styled = remember(raw) { buildAnsiText(parseAnsiLine(raw)) }
-                        Text(
-                            text = styled,
-                            fontFamily = piMono,
-                            fontSize = fontSize,
-                            lineHeight = fontSize,
-                            softWrap = false,
-                            maxLines = 1,
-                            overflow = TextOverflow.Clip,
-                        )
+                        val item = remember(raw) { parseMirrorLine(raw) }
+                        when (item) {
+                            is MirrorItem.Line -> {
+                                val styled = remember(raw) { buildAnsiText(item.segments) }
+                                Text(
+                                    text = styled,
+                                    fontFamily = piMono,
+                                    fontSize = fontSize,
+                                    lineHeight = fontSize,
+                                    softWrap = false,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Clip,
+                                )
+                            }
+                            is MirrorItem.Img -> MirrorImageItem(item.image)
+                        }
                     }
                 }
             }
         }
     }
+}
+
+/** Render an inline image from the mirror (kitty graphics / OSC 1337), scaled to
+ *  the mirror width preserving aspect ratio. Falls back to "[image]" if decode
+ *  fails (e.g. an oversized or corrupt payload). */
+@Composable
+private fun MirrorImageItem(image: TtyBlock.Image) {
+    val bitmap = remember(image.base64) { decodeBase64Image(image.base64) }
+    if (bitmap == null) {
+        Text("[image]", fontFamily = piMono, fontSize = 12.sp, color = textMuted)
+        return
+    }
+    Image(
+        bitmap = bitmap.asImageBitmap(),
+        contentDescription = "inline image",
+        contentScale = ContentScale.Fit,
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(bitmap.width.toFloat() / bitmap.height.toFloat()),
+    )
 }

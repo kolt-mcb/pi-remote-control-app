@@ -452,7 +452,7 @@ class PiWebSocket : WebSocketListener() {
         // mirror, not the message-list scrollback), so the host skips shipping the
         // full conversation history, which was the bulk of connect latency on a
         // slow link. Old hosts ignore the unknown type and still send history.
-        sock?.send("{\"type\":\"client_hello\",\"mirrorOnly\":true,\"diff\":true,\"deflate\":true}")
+        sock?.send("{\"type\":\"client_hello\",\"mirrorOnly\":true,\"diff\":true,\"deflate\":true,\"mirrorImages\":true}")
         // Request session list and command list on connect
         sock?.send("{\"type\":\"get_sessions\"}")
         sock?.send("{\"type\":\"get_commands\"}")
