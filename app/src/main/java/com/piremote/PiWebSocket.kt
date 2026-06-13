@@ -636,6 +636,14 @@ class PiWebSocket : WebSocketListener() {
                 val lines = (j["lines"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
                 val cur = j["cursor"] as? Map<*, *>
                 val agentId = Js.gets(j, "agentId") ?: ""
+                if (Log.isLoggable("PiMirror", Log.DEBUG)) {
+                    lines.forEachIndexed { i, l ->
+                        if (l.contains("_G") || l.contains("]1337")) {
+                            val ok = com.piremote.tty.TtyStreamParser.parse(l).any { it is com.piremote.tty.TtyBlock.Image }
+                            Log.d("PiMirror", "imgline[$i] len=${l.length} decodes=$ok head=${l.take(80).replace("", "<ESC>")}")
+                        }
+                    }
+                }
                 mirrorBuf = lines.toMutableList()
                 mirrorBufAgent = agentId
                 _mirrorFrame.value = MirrorFrame(
