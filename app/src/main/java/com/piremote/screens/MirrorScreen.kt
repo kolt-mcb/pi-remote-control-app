@@ -9,9 +9,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -52,87 +53,80 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
         )
         r.size.width / 100f
     }
-    // Row height MUST equal the rendered line height (lineHeight = fontSize below),
-    // not the measurer's natural height (~1.16em). Using the natural height skewed
-    // every tapped row by ~16%, compounding over a tall scrollback so SGR clicks
-    // landed tens of rows away from the tapped widget.
-    val cellHeight = remember(fontSize, density) { with(density) { fontSize.toPx() } }
 
-    val vScroll = rememberScrollState()
+    val listState = rememberLazyListState()
     // Follow the live bottom of the buffer, but never fight the user's finger:
-    // stop following the moment they scroll, resume when they release at the
-    // bottom. Without this, every frame yanks the view down mid-drag.
+    // stop following the moment they scroll, resume when they settle at the bottom.
     var followBottom by remember { mutableStateOf(true) }
-    LaunchedEffect(vScroll.isScrollInProgress) {
-        if (vScroll.isScrollInProgress) {
-            followBottom = false
-        } else if (vScroll.value >= vScroll.maxValue - 16) {
-            followBottom = true
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (!listState.isScrollInProgress) {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
+            followBottom = last == null || last.index >= frame.lines.size - 1
         }
     }
-    // Drive the auto-scroll off maxValue itself: it only grows AFTER the new
-    // frame is measured/laid out, so scrolling on frame.seq used the previous
-    // frame's (too-small) maxValue and rested one line short of the bottom.
-    LaunchedEffect(Unit) {
-        snapshotFlow { vScroll.maxValue }.collect { max ->
-            if (followBottom && !vScroll.isScrollInProgress) vScroll.scrollTo(max)
+    // Stick to the bottom as new frames arrive: scrollToItem(last) clamps to the
+    // end, leaving the latest line at the viewport bottom.
+    LaunchedEffect(frame.seq) {
+        if (followBottom && frame.lines.isNotEmpty() && !listState.isScrollInProgress) {
+            listState.scrollToItem(frame.lines.size - 1)
         }
     }
 
-    // Normal-app gestures: long-press + drag selects text (SelectionContainer),
-    // a quick tap clicks the terminal (SGR mouse). They coexist because the tap
-    // detector below only fires on a release BEFORE the long-press timeout and
-    // never consumes the event, so a held press falls through to selection.
-    // No horizontal scroll: the host renders at the phone's width, so lines fit.
-    Box(modifier = modifier.fillMaxSize().verticalScroll(vScroll)) {
-        SelectionContainer {
-            Column(
-                modifier = Modifier.fillMaxWidth().pointerInput(frame.width, frame.height, cellWidth, cellHeight) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                            waitForUpOrCancellation()
-                        }
-                        if (up != null) {
-                            // Quick tap → SGR click. Coords are 1-based and
-                            // viewport-relative (bottom `height` lines = screen).
-                            val lineIdx = (down.position.y / cellHeight).toInt()
-                            val viewportTop = maxOf(0, frame.lines.size - frame.height)
-                            val row = lineIdx - viewportTop + 1
-                            val col = (down.position.x / cellWidth).toInt() + 1
-                            if (row in 1..frame.height && col in 1..frame.width) {
-                                onInput("$ESC[<0;$col;${row}M") // press
-                                onInput("$ESC[<0;$col;${row}m") // release
-                            }
-                        }
-                        // up == null → held past long-press: leave it for
-                        // SelectionContainer to start a selection.
+    // Virtualized: only on-screen rows are composed, so scrolling stays fast no
+    // matter how long the conversation/scrollback grows (the host sends the full
+    // composed buffer, which can be thousands of lines).
+    // Gestures: a quick tap clicks the terminal (SGR mouse); a held press falls
+    // through (non-consuming) to SelectionContainer for text selection.
+    SelectionContainer {
+        LazyColumn(
+            state = listState,
+            modifier = modifier.fillMaxSize().pointerInput(frame.width, frame.height) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                        waitForUpOrCancellation()
                     }
-                },
-            ) {
-                // Per-line memoization: frames mostly repeat (a spinner animates
-                // one line); parsing only runs for lines whose raw text changed,
-                // and unchanged nodes skip recompose. A line carrying an inline
-                // image (kitty/OSC 1337) renders as an image; the rest is text.
-                frame.lines.forEachIndexed { idx, raw ->
-                    key(idx) {
-                        val item = remember(raw) { parseMirrorLine(raw) }
-                        when (item) {
-                            is MirrorItem.Line -> {
-                                val styled = remember(raw) { buildAnsiText(item.segments) }
-                                Text(
-                                    text = styled,
-                                    fontFamily = piMono,
-                                    fontSize = fontSize,
-                                    lineHeight = fontSize,
-                                    softWrap = false,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Clip,
-                                )
-                            }
-                            is MirrorItem.Img -> MirrorImageItem(item.image)
+                    if (up != null) {
+                        // Quick tap → SGR click. Find the visible row under the tap
+                        // (robust to variable-height image rows), then map to the
+                        // host's 1-based, viewport-relative coordinates.
+                        val hit = listState.layoutInfo.visibleItemsInfo.firstOrNull {
+                            down.position.y >= it.offset && down.position.y < it.offset + it.size
+                        }
+                        val lineIdx = hit?.index ?: listState.firstVisibleItemIndex
+                        val viewportTop = maxOf(0, frame.lines.size - frame.height)
+                        val row = lineIdx - viewportTop + 1
+                        val col = (down.position.x / cellWidth).toInt() + 1
+                        if (row in 1..frame.height && col in 1..frame.width) {
+                            onInput("$ESC[<0;$col;${row}M") // press
+                            onInput("$ESC[<0;$col;${row}m") // release
                         }
                     }
+                    // up == null → held past long-press: leave it for
+                    // SelectionContainer to start a selection.
+                }
+            },
+        ) {
+            // Per-line memoization: parsing only runs for a row whose raw text
+            // changed; a row carrying an inline image (kitty/OSC 1337) renders as
+            // an image, the rest is text.
+            items(frame.lines.size, key = { it }) { idx ->
+                val raw = frame.lines[idx]
+                val item = remember(raw) { parseMirrorLine(raw) }
+                when (item) {
+                    is MirrorItem.Line -> {
+                        val styled = remember(raw) { buildAnsiText(item.segments) }
+                        Text(
+                            text = styled,
+                            fontFamily = piMono,
+                            fontSize = fontSize,
+                            lineHeight = fontSize,
+                            softWrap = false,
+                            maxLines = 1,
+                            overflow = TextOverflow.Clip,
+                        )
+                    }
+                    is MirrorItem.Img -> MirrorImageItem(item.image)
                 }
             }
         }
