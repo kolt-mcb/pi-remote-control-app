@@ -19,6 +19,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import okio.ByteString
 import java.net.URI
 import java.security.MessageDigest
 import java.security.cert.CertificateException
@@ -451,7 +452,7 @@ class PiWebSocket : WebSocketListener() {
         // mirror, not the message-list scrollback), so the host skips shipping the
         // full conversation history, which was the bulk of connect latency on a
         // slow link. Old hosts ignore the unknown type and still send history.
-        sock?.send("{\"type\":\"client_hello\",\"mirrorOnly\":true,\"diff\":true}")
+        sock?.send("{\"type\":\"client_hello\",\"mirrorOnly\":true,\"diff\":true,\"deflate\":true}")
         // Request session list and command list on connect
         sock?.send("{\"type\":\"get_sessions\"}")
         sock?.send("{\"type\":\"get_commands\"}")
@@ -493,6 +494,24 @@ class PiWebSocket : WebSocketListener() {
                 Log.d("PiWireStats", "${wireBytes / 1024} KiB/s · $wireFrames frames/s")
             }
             wireBytes = 0; wireFrames = 0; wireLogAt = now
+        }
+    }
+
+    // Binary frames are deflated mirror payloads (host compresses large ones).
+    // Inflate (with a decompression-bomb cap), then dispatch as normal JSON.
+    override fun onMessage(ws: WebSocket, bytes: ByteString) {
+        if (ws !== sock) return
+        val txt = try {
+            com.piremote.tty.inflateZlib(bytes.toByteArray())
+        } catch (t: Throwable) {
+            Log.e("PiWebSocket", "inflate error (${bytes.size} bytes)", t)
+            return
+        }
+        accountWire(txt.length)
+        try {
+            dispatch(txt)
+        } catch (t: Throwable) {
+            Log.e("PiWebSocket", "dispatch error on inflated frame: ${txt.take(200)}", t)
         }
     }
 
