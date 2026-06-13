@@ -26,8 +26,16 @@
       extension supports an optional shared-secret token (PI_REMOTE_TOKEN)
       for cases where the host is exposed.
     -->
+    <!--
+      allowBackup is OFF: the settings DataStore holds the server URL with its
+      `?token=...` shared secret and `&fp=` cert pin, and the Room DB holds full
+      conversation content (often code/secrets from the dev agent). Auto Backup
+      would ship all of that to the user's cloud. Disable rather than scope it.
+    -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"

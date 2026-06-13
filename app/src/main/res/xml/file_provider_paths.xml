@@ -7,4 +7,8 @@
 -->
 <paths>
     <cache-path name="updates" path="updates/" />
+    <!-- Host-pushed files (piRemote.sendFile) are written here, kept SEPARATE
+         from updates/ so a pushed file can't collide with / overwrite a
+         downloaded APK awaiting install. -->
+    <cache-path name="shared" path="shared/" />
 </paths>

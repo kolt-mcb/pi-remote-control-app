@@ -31,6 +31,7 @@ import com.piremote.screens.InputDialog
 import com.piremote.screens.TabletLayout
 import com.piremote.screens.TabletConnectScreen
 import com.piremote.screens.TerminalRenderView
+import com.piremote.screens.FileDownloadDialog
 import com.piremote.screens.clearImageCaches
 import com.piremote.test.TestState
 import com.piremote.theme.PiRemoteTheme
@@ -66,7 +67,10 @@ class MainActivity : ComponentActivity() {
         setContent {
             PiRemoteTheme {
                 Box(modifier = Modifier.fillMaxSize().safeContentPadding()) {
-                val vm: ChatViewModel = viewModel(factory = ChatViewModel.Factory(ws, this@MainActivity))
+                // Pass applicationContext, not the Activity — the ViewModel
+                // outlives the Activity across config changes, and its long-lived
+                // collectors hold this Context; an Activity ref would leak the view tree.
+                val vm: ChatViewModel = viewModel(factory = ChatViewModel.Factory(ws, applicationContext))
                 val st = vm.st
                 // Collect flows from the single state object — the Activity
                 // never reaches past the ViewModel into PiWebSocket directly.
@@ -207,6 +211,10 @@ class MainActivity : ComponentActivity() {
                     else ->
                         ConnectScreen(vm, url, inp, ms, assist, status, urlHistory, sessions)
                 }
+
+                // Host-pushed file downloads (both form factors)
+                val fileDownload by vm.fileDownload.collectAsState()
+                fileDownload?.let { FileDownloadDialog(it) { vm.clearFileDownload() } }
 
                 // Overlay dialogs (phone only — tablet owns its own in TabletLayout)
                 if (!isTablet) {

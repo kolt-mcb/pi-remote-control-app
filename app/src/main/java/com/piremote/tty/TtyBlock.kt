@@ -32,10 +32,13 @@ sealed interface CellSpec {
         /** Parse an OSC 1337 dimension value: "N" (cells), "Npx", "N%", "auto". */
         fun parse(value: String?): CellSpec {
             if (value.isNullOrBlank() || value == "auto") return Auto
+            // Clamp to sane ranges, returning Auto on out-of-range: an unbounded
+            // height= (tens of millions of px) overflows Compose Constraints and
+            // throws during layout — a remote crash from one stream byte.
             return when {
-                value.endsWith("px") -> value.dropLast(2).toIntOrNull()?.let { Pixels(it) } ?: Auto
-                value.endsWith("%") -> value.dropLast(1).toIntOrNull()?.let { Percent(it) } ?: Auto
-                else -> value.toIntOrNull()?.let { Cells(it) } ?: Auto
+                value.endsWith("px") -> value.dropLast(2).toIntOrNull()?.takeIf { it in 1..100_000 }?.let { Pixels(it) } ?: Auto
+                value.endsWith("%") -> value.dropLast(1).toIntOrNull()?.takeIf { it in 1..100 }?.let { Percent(it) } ?: Auto
+                else -> value.toIntOrNull()?.takeIf { it in 1..10_000 }?.let { Cells(it) } ?: Auto
             }
         }
     }

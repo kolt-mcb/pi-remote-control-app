@@ -40,6 +40,23 @@ android {
         versionName = gitVersionName
     }
 
+    // Release signing. Driven by env vars so CI can sign with a STABLE keystore
+    // (stored as a GitHub secret) — every release APK must share one signing key
+    // or Android refuses to install the update over the previous build. When the
+    // env vars are absent (local dev) the release build is left unsigned and the
+    // config is not applied, so `assembleDebug` and IDE syncs are unaffected.
+    val releaseStoreFile = System.getenv("KEYSTORE_FILE")
+    signingConfigs {
+        if (releaseStoreFile != null) {
+            create("release") {
+                storeFile = file(releaseStoreFile)
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -47,6 +64,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            if (releaseStoreFile != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         debug {
             isMinifyEnabled = false

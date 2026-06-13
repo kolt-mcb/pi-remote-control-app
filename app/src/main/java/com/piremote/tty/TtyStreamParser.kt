@@ -42,6 +42,10 @@ object TtyStreamParser {
         private var col = 0
         private var swallowNewline = false
         private val kitty = HashMap<Int, KittyAccum>()
+        // Ids whose opening chunk was rejected (unsupported action/format/compression).
+        // Their `a`-less continuation chunks must be skipped, not treated as a fresh
+        // transmission — otherwise a partial payload resurrects as a phantom image.
+        private val droppedKitty = HashSet<Int>()
 
         fun parse(stream: String): List<TtyBlock> {
             val n = stream.length
@@ -72,6 +76,10 @@ object TtyStreamParser {
                     '[' -> consumeCsi(stream, i)
                     ']' -> consumeOsc(stream, i)
                     '_' -> consumeApc(stream, i)
+                    // DCS / SOS / PM string sequences: consume to the ST terminator
+                    // and drop, so a sixel/tmux-passthrough payload doesn't leak as
+                    // visible text. (PROTOCOL.md: raw program output flows through safely.)
+                    'P', 'X', '^' -> consumeStringSeq(stream, i)
                     else -> i + 2 // unknown two-char escape: drop it
                 }
             }
@@ -151,8 +159,13 @@ object TtyStreamParser {
 
         private fun consumeOsc(s: String, start: Int): Int {
             val from = start + 2
-            val found = findStringTerminator(s, from, MAX_IMAGE_PAYLOAD + 1024)
-                ?: return minOf(s.length, from + MAX_IMAGE_PAYLOAD + 1024) // drop; resume past cap
+            // Only image-bearing OSC 1337 gets the multi-MB scan window. A
+            // truncated misc OSC (e.g. a title) must not swallow up to 8 MiB of
+            // the following stream — PROTOCOL.md caps other OSC payloads at 4 KiB
+            // and promises surrounding text survives.
+            val cap = if (s.startsWith("1337;File=", from)) MAX_IMAGE_PAYLOAD + 1024 else MAX_MISC_OSC + 16
+            val found = findStringTerminator(s, from, cap)
+                ?: return minOf(s.length, from + cap) // drop; resume past cap
             val (contentEnd, next) = found
             val content = s.substring(from, contentEnd)
 
@@ -162,7 +175,10 @@ object TtyStreamParser {
                     if (content.length <= MAX_MISC_OSC) {
                         val uri = content.substringAfter(';').substringAfter(';', "")
                         flushSegment()
-                        style = style.copy(link = uri.ifBlank { null })
+                        // Only allow web/mail schemes to become tappable; a hostile
+                        // host could otherwise smuggle intent:// / javascript: URIs
+                        // into a clickable link.
+                        style = style.copy(link = uri.takeIf { it.isNotBlank() && isSafeLinkScheme(it) })
                     }
                 }
                 content.startsWith("1337;File=") -> {
@@ -197,10 +213,22 @@ object TtyStreamParser {
 
         // ── APC (kitty graphics) ───────────────────────────────────────
 
+        /** Consume a DCS/SOS/PM string sequence to its ST terminator and drop it. */
+        private fun consumeStringSeq(s: String, start: Int): Int {
+            val from = start + 2
+            val cap = MAX_MISC_OSC + 16
+            val found = findStringTerminator(s, from, cap)
+                ?: return minOf(s.length, from + cap)
+            return found.second
+        }
+
         private fun consumeApc(s: String, start: Int): Int {
             val from = start + 2
-            val found = findStringTerminator(s, from, MAX_IMAGE_PAYLOAD + 1024)
-                ?: return minOf(s.length, from + MAX_IMAGE_PAYLOAD + 1024)
+            // Big scan window only for kitty graphics (starts with 'G'); any other
+            // APC is misc and capped, so a truncated one can't swallow the stream.
+            val cap = if (s.startsWith("G", from)) MAX_IMAGE_PAYLOAD + 1024 else MAX_MISC_OSC + 16
+            val found = findStringTerminator(s, from, cap)
+                ?: return minOf(s.length, from + cap)
             val (contentEnd, next) = found
             val content = s.substring(from, contentEnd)
             if (!content.startsWith("G")) return next // not kitty graphics: drop
@@ -219,12 +247,19 @@ object TtyStreamParser {
 
             // Only transmit+display of PNG data is supported; anything else
             // (placements, deletion, animation, compression, raw formats) drops.
-            if (controls["o"] == "z") { kitty.remove(id); return next }
+            if (controls["o"] == "z") { kitty.remove(id); droppedKitty.add(id); return next }
             val isContinuation = kitty.containsKey(id) && controls["a"] == null
             if (!isContinuation) {
-                if (action != "T" && action != "t") return next
+                // A continuation chunk (no explicit `a`) of a train we already
+                // rejected: skip it instead of starting a new transmission.
+                if (controls["a"] == null && id in droppedKitty) {
+                    if (!more) droppedKitty.remove(id)
+                    return next
+                }
+                if (action != "T" && action != "t") { droppedKitty.add(id); return next }
                 val format = controls["f"]?.toIntOrNull() ?: 100
-                if (format != 100) return next
+                if (format != 100) { droppedKitty.add(id); return next }
+                droppedKitty.remove(id)
                 kitty[id] = KittyAccum(
                     format = format,
                     cols = controls["c"]?.toIntOrNull(),
@@ -255,6 +290,11 @@ object TtyStreamParser {
 
         private fun isBase64(s: String): Boolean = s.all {
             it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it == '+' || it == '/' || it == '='
+        }
+
+        private fun isSafeLinkScheme(uri: String): Boolean {
+            val lower = uri.trimStart().lowercase()
+            return lower.startsWith("http://") || lower.startsWith("https://") || lower.startsWith("mailto:")
         }
 
         private fun sniffMime(base64: String): String = when {

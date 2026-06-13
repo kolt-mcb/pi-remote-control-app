@@ -9,6 +9,7 @@ package com.piremote.tty
 
 /** The ESC control character (0x1B). Defined numerically to keep raw escape bytes out of source. */
 val ESC: Char = 27.toChar()
+val BEL: Char = 7.toChar()
 
 /** Parsed ANSI SGR color/style. [link] carries an OSC 8 hyperlink target, if any. */
 data class AnsiStyle(
@@ -73,19 +74,41 @@ fun parseAnsiLine(line: String): List<Pair<String, AnsiStyle>> {
 
     while (i < line.length) {
         if (line[i] == ESC && i + 1 < line.length && line[i + 1] == '[') {
+            // CSI = ESC [ , parameter bytes (0x30-0x3F), intermediates (0x20-0x2F),
+            // one final byte (0x40-0x7E). Scan to the final byte instead of hunting
+            // for a literal 'm' — otherwise a non-SGR CSI like ESC[K or ESC[2J eats
+            // all following text up to the next 'm' in the visible content.
             var j = i + 2
-            while (j < line.length && line[j] != 'm') j++
-            if (j < line.length && line[j] == 'm') {
-                val sgrStr = line.substring(i + 2, j)
-                val codes = sgrStr.split(";")
-                if (textBuf.isNotEmpty()) {
-                    segments.add(Pair(textBuf.toString(), style.copy()))
-                    textBuf = StringBuilder()
+            while (j < line.length && line[j].code in 0x30..0x3F) j++
+            while (j < line.length && line[j].code in 0x20..0x2F) j++
+            if (j < line.length && line[j].code in 0x40..0x7E) {
+                if (line[j] == 'm') {
+                    val codes = line.substring(i + 2, j).split(";")
+                    if (textBuf.isNotEmpty()) {
+                        segments.add(Pair(textBuf.toString(), style.copy()))
+                        textBuf = StringBuilder()
+                    }
+                    style = parseSgrCodes(codes, style)
                 }
-                style = parseSgrCodes(codes, style)
+                // Any other final byte: a non-SGR CSI — parsed and silently dropped.
                 i = j + 1
             } else {
-                i++
+                // Malformed / unterminated CSI: drop the introducer, keep scanning.
+                i += 2
+            }
+        } else if (line[i] == ESC && i + 1 < line.length && line[i + 1] == ']') {
+            // OSC sequence (e.g. OSC 8 hyperlinks: ESC]8;;URL ST text ESC]8;; ST).
+            // Skip the marker to its terminator — BEL or ST (ESC \) — so the
+            // bare "]8;;" no longer renders as literal text. The link TEXT lives
+            // between the open and close markers and renders normally.
+            var j = i + 2
+            while (j < line.length && line[j] != BEL && line[j] != ESC) j++
+            i = if (j < line.length && line[j] == ESC && j + 1 < line.length && line[j + 1] == '\\') {
+                j + 2 // ST terminator (ESC \)
+            } else if (j < line.length && line[j] == BEL) {
+                j + 1 // BEL terminator
+            } else {
+                j // ran off the end or hit a lone ESC (next loop handles it)
             }
         } else {
             textBuf.append(line[i])
@@ -135,11 +158,15 @@ internal fun parseSgrCodes(codes: List<String>, style: AnsiStyle): AnsiStyle {
                 val mode = codes.getOrNull(ci + 1)?.toIntOrNull()
                 when (mode) {
                     2 -> if (ci + 4 < codes.size) {
-                        s = s.copy(
-                            fgR = codes[ci + 2].toIntOrNull() ?: -1,
-                            fgG = codes[ci + 3].toIntOrNull() ?: -1,
-                            fgB = codes[ci + 4].toIntOrNull() ?: -1
-                        )
+                        // Clamp each component to 0..255; if any fails to parse,
+                        // leave the whole channel at default rather than a mixed
+                        // sentinel — Compose Color(r/255f,...) throws on out-of-range.
+                        val r = codes[ci + 2].toIntOrNull()?.coerceIn(0, 255)
+                        val g = codes[ci + 3].toIntOrNull()?.coerceIn(0, 255)
+                        val b = codes[ci + 4].toIntOrNull()?.coerceIn(0, 255)
+                        s = if (r != null && g != null && b != null)
+                            s.copy(fgR = r, fgG = g, fgB = b)
+                        else s.copy(fgR = -1, fgG = -1, fgB = -1)
                         5
                     } else 1
                     5 -> if (ci + 2 < codes.size) {
@@ -158,11 +185,12 @@ internal fun parseSgrCodes(codes: List<String>, style: AnsiStyle): AnsiStyle {
                 val mode = codes.getOrNull(ci + 1)?.toIntOrNull()
                 when (mode) {
                     2 -> if (ci + 4 < codes.size) {
-                        s = s.copy(
-                            bgR = codes[ci + 2].toIntOrNull() ?: -1,
-                            bgG = codes[ci + 3].toIntOrNull() ?: -1,
-                            bgB = codes[ci + 4].toIntOrNull() ?: -1
-                        )
+                        val r = codes[ci + 2].toIntOrNull()?.coerceIn(0, 255)
+                        val g = codes[ci + 3].toIntOrNull()?.coerceIn(0, 255)
+                        val b = codes[ci + 4].toIntOrNull()?.coerceIn(0, 255)
+                        s = if (r != null && g != null && b != null)
+                            s.copy(bgR = r, bgG = g, bgB = b)
+                        else s.copy(bgR = -1, bgG = -1, bgB = -1)
                         5
                     } else 1
                     5 -> if (ci + 2 < codes.size) {

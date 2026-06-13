@@ -4,8 +4,14 @@
     <application>
 
         <!-- ADB/test broadcast receiver. Debug builds only — release APKs do not
-             register this, so the actions cannot be triggered from other apps. -->
-        <receiver android:name=".test.TestReceiver" android:exported="true">
+             register this, so the actions cannot be triggered from other apps.
+             Gated by the signature|privileged DUMP permission so that even in a
+             sideloaded debug build only the adb shell (which holds DUMP) can drive
+             it — a co-installed app cannot inject prompts or repoint the connection.
+             `adb shell am broadcast ...` still works. -->
+        <receiver android:name=".test.TestReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
             <intent-filter>
                 <action android:name="com.piremote.test.CONNECT" />
                 <action android:name="com.piremote.test.SEND_PROMPT" />

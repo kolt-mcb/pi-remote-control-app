@@ -38,7 +38,6 @@ import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.piremote.*
 import com.piremote.theme.*
-import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 
 /**
@@ -56,7 +55,9 @@ fun TabletConnectScreen(
     sessions: List<RemoteSession> = emptyList(),
     modifier: Modifier = Modifier,
 ) {
-    var t by remember { mutableStateOf(url) }
+    // Key on url so the field populates once the saved URL loads from DataStore
+    // (async, after first compose). Typing mutates only `t`, never `url`.
+    var t by remember(url) { mutableStateOf(url) }
     var showScanner by remember { mutableStateOf(true) } // default on for tablets
     var inputMode by remember { mutableStateOf(false) }
 
@@ -259,11 +260,16 @@ fun TabletQrScannerPane(
 ) {
     val ctx = LocalContext.current
     val lifecycle = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
 
     val scanner = remember { BarcodeScanning.getClient(BarcodeScannerOptions.Builder()
         .setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()) }
     DisposableEffect(scanner) { onDispose { scanner.close() } }
+
+    // See QrScanner.kt for the rationale behind these three. Same camera/scan
+    // lifecycle bugs were duplicated here in the tablet pane.
+    val scanned = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val cameraProvider = remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
 
     var hasCamera by remember {
         mutableStateOf(androidx.core.content.ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
@@ -276,12 +282,8 @@ fun TabletQrScannerPane(
     }
 
     fun processQr(raw: String) {
-        val wsUrl = when {
-            raw.startsWith("piremote://") -> raw.replaceFirst("piremote://", "ws://")
-            raw.startsWith("ws://") || raw.startsWith("wss://") -> raw
-            else -> "ws://$raw"
-        }
-        onConnected(wsUrl)
+        val wsUrl = com.piremote.scan.parseScannedUrl(raw) ?: return
+        if (scanned.compareAndSet(false, true)) onConnected(wsUrl)
     }
 
     Column(modifier = modifier) {
@@ -299,33 +301,36 @@ fun TabletQrScannerPane(
                 AndroidView(
                     factory = { context ->
                         val preview = PreviewView(context).apply { scaleType = PreviewView.ScaleType.FILL_CENTER }
-                        scope.launch {
-                            val provider = ProcessCameraProvider.getInstance(context).get()
+                        val providerFuture = ProcessCameraProvider.getInstance(context)
+                        providerFuture.addListener({
+                            val provider = providerFuture.get()
+                            cameraProvider.value = provider
                             val pr = Preview.Builder().build().also { p -> p.setSurfaceProvider(preview.surfaceProvider) }
                             val an = ImageAnalysis.Builder()
                                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                                .build().also { a -> a.setAnalyzer(Executors.newSingleThreadExecutor()) { proxy ->
-                                    proxy.image?.let { mediaImg ->
+                                .build().also { a -> a.setAnalyzer(analysisExecutor) { proxy ->
+                                    val mediaImg = proxy.image
+                                    if (mediaImg != null) {
                                         val img = InputImage.fromMediaImage(mediaImg, proxy.imageInfo.rotationDegrees)
-                                        scanner.process(img).addOnSuccessListener { codes ->
-                                            for (c in codes) c.rawValue?.let { processQr(it) }
-                                        }
-                                    }
-                                    proxy.close()
+                                        scanner.process(img)
+                                            .addOnSuccessListener { codes ->
+                                                for (c in codes) c.rawValue?.let { processQr(it) }
+                                            }
+                                            .addOnCompleteListener { proxy.close() }
+                                    } else proxy.close()
                                 } }
                             val sel = CameraSelector.Builder().requireLensFacing(CameraSelector.LENS_FACING_BACK).build()
+                            provider.unbindAll()
                             provider.bindToLifecycle(lifecycle, sel, pr, an)
-                        }
+                        }, androidx.core.content.ContextCompat.getMainExecutor(context))
                         preview
                     },
                     modifier = Modifier.fillMaxSize()
                 )
                 DisposableEffect(Unit) {
                     onDispose {
-                        scope.launch {
-                            val provider = ProcessCameraProvider.getInstance(ctx).get()
-                            provider.unbindAll()
-                        }
+                        cameraProvider.value?.unbindAll()
+                        analysisExecutor.shutdown()
                     }
                 }
             }
@@ -363,7 +368,7 @@ fun TabletQrScannerPane(
                     textStyle = LocalTextStyle.current.copy(color = Color.White, fontFamily = piMono, fontSize = 12.sp),
                 )
                 Spacer(modifier = Modifier.width(6.dp))
-                Button(onClick = { if (manualUrl.isNotBlank()) onConnected(manualUrl) },
+                Button(onClick = { com.piremote.scan.parseScannedUrl(manualUrl)?.let { onConnected(it) } },
                     enabled = manualUrl.isNotBlank(), modifier = Modifier.height(36.dp)) {
                     Text("Connect", fontSize = 12.sp)
                 }

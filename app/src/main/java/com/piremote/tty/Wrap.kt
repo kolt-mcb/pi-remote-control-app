@@ -67,6 +67,13 @@ private fun wrapLine(
             }
         }
 
+        // Never cut between a surrogate pair, or both halves render as the
+        // replacement glyph. Push the high surrogate to the next line.
+        if (end in (start + 2)..(flat.size - 1) && flat[end - 1].first.isHighSurrogate()) {
+            end--
+            nextStart = end
+        }
+
         val cells = if (first) flat.subList(start, end).toList()
                     else prefix + flat.subList(start, end)
         out.add(regroup(cells))

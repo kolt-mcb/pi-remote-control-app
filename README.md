@@ -9,10 +9,16 @@ This is the **app** half. The Pi extension (host side) lives in its own repo:
 
 ## Install
 
-Side-load the APK from [Releases](../../releases). CI publishes a versioned debug
+Side-load the APK from [Releases](../../releases). CI publishes a versioned, **release-signed**
 APK on every push to `master`; the rolling **`latest`** pre-release always points at
 the most recent build. The in-app updater checks that `latest` release and offers to
 download newer builds.
+
+> **CI signing secrets** (required for the publish job): `RELEASE_KEYSTORE_BASE64`
+> (base64 of a `.keystore`/`.jks`), `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`,
+> `RELEASE_KEY_PASSWORD`. The keystore must be **stable across builds** — Android only
+> installs an update over a build signed with the same key, so a rotated key breaks the
+> in-app updater. PR builds run an unsigned `assembleDebug` smoke check and publish nothing.
 
 First launch requests:
 - **Camera** — for the QR scanner on the connect screen.

@@ -27,6 +27,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -36,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.piremote.*
+import com.piremote.R
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
@@ -56,7 +61,13 @@ import kotlinx.coroutines.launch
 
 // ── Pi Terminal Font Family ────────────────────────────────────────────
 
-val piMono = FontFamily.Monospace
+// DejaVu Sans Mono: a real terminal font whose box-drawing glyphs (─ │ ┌ ┐ etc.)
+// span the full cell, so horizontal rules render solid instead of dashed — the
+// default Android FontFamily.Monospace leaves side gaps that break long lines.
+val piMono = FontFamily(
+    Font(R.font.dejavu_sans_mono, FontWeight.Normal),
+    Font(R.font.dejavu_sans_mono_bold, FontWeight.Bold),
+)
 
 // ── Pi Terminal Border Helpers ─────────────────────────────────────────
 
@@ -159,7 +170,10 @@ fun ConnectScreen(
     assist: String, status: ConnectionStatus, urlHistory: Set<String>,
     sessions: List<RemoteSession> = emptyList()
 ) {
-    var t by remember { mutableStateOf(url) }
+    // Key on url so the field populates once DataStore loads the saved URL
+    // (which arrives asynchronously, after this screen first composes). Typing
+    // only mutates `t`, never `url`, so this never clobbers user input.
+    var t by remember(url) { mutableStateOf(url) }
     var showScanner by remember { mutableStateOf(false) }
     var inputMode by remember { mutableStateOf(false) }
     val connect = {
@@ -1059,8 +1073,58 @@ fun ChatScreen(
         if (busy) busyStartedAt = System.currentTimeMillis()
     }
 
-    Column(modifier = Modifier.fillMaxSize().background(bg).imePadding()) {
+        // Mirror state computed up front: when a live frame is showing, the
+        // mirror already renders pi's FULL screen (its loader, status line,
+        // widgets, footer), so we suppress the app's duplicate chrome below to
+        // avoid a second "Working..." spinner and stray separators.
+        val mirrorFrame by vm.mirrorFrame.collectAsState()
+        val selfId = sessions.firstOrNull { it.isSelf }?.id
+        val chosen = sessions.firstOrNull { it.id == selectedSession }
+            ?: sessions.firstOrNull { it.isSelf }
+            ?: sessions.firstOrNull()
+        // The host's OWN session subscribes with a blank agentId so it always
+        // takes the self/clamp path; peers subscribe by their id.
+        val mirrorTarget = if (chosen == null || chosen.isSelf) "" else chosen.id
+        // Subscribe to the mirror only while this screen is in the FOREGROUND.
+        // When the app is backgrounded the host keeps pumping full-screen frames
+        // over the (metered, slow) link to a view nobody's looking at — so unsubscribe
+        // on ON_STOP and re-subscribe on ON_START (the host sends an immediate
+        // snapshot on subscribe, so the view refreshes at once on return).
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(mirrorTarget, lifecycleOwner) {
+            // Subscribe immediately on (re)compose — we're in the foreground here.
+            // Relying on the observer's ON_START alone failed to fire on the initial
+            // composition, so the mirror never subscribed until a tab switch.
+            vm.setMirror(true, mirrorTarget)
+            // Then track foreground/background to pause the stream while backgrounded.
+            var started = true   // we just subscribed above; skip the add-time ON_START
+            val observer = LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_START -> if (!started) { vm.setMirror(true, mirrorTarget); started = true }
+                    Lifecycle.Event.ON_STOP -> { vm.setMirror(false, mirrorTarget); started = false }
+                    else -> {}
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(observer)
+                vm.setMirror(false, mirrorTarget)
+            }
+        }
+        val liveFrame = mirrorFrame?.takeIf {
+            if (mirrorTarget.isBlank()) (selfId == null || it.agentId == selfId) else it.agentId == mirrorTarget
+        }
+
+        Column(modifier = Modifier.fillMaxSize().background(bg).imePadding()) {
         PiHeader(status, busy, { vm.disconnect() }, uiTitle?.take(30))
+
+        // Host notify() messages and dropped-send warnings. Previously the
+        // banner list was plumbed all the way here but never drawn.
+        if (notifyBanners.isNotEmpty()) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                notifyBanners.takeLast(3).forEach { b -> NotifyBanner(b.content, b.type) }
+            }
+        }
 
         if (showSessionSelector && sessions.isNotEmpty()) {
             PiSessionSelector(
@@ -1070,49 +1134,32 @@ fun ChatScreen(
             )
         }
 
-        StatusBarLine(statuses)
-        widgets.forEach { (key, lines) -> WidgetPanel(key, lines) }
-        notifyBanners.forEach { NotifyBanner(it.content, it.type) }
-
-        // Chat Messages Area — unified TTY scrollback, no bubbles.
+        // The mirror IS the session view — it renders pi's whole screen (status,
+        // widgets, loader, footer). No legacy scrollback or duplicate chrome; a
+        // neutral placeholder shows until the first frame arrives (no UI flash).
         BoxWithConstraints(modifier = Modifier.weight(1f)) {
-            // Measured monospace metrics: the same column count feeds the host
-            // (so extension components re-render to fit) and local wrapping.
+            // Measured monospace metrics feed the host so it renders at our width.
             val metrics = rememberTtyMetrics(maxWidth)
             LaunchedEffect(metrics.cols) { vm.reportViewport(metrics.cols) }
-            val context = LocalContext.current
-            TtyScrollback(
-                messages = messages,
-                assist = assist,
-                busy = busy,
-                showStartupHeader = messages.isEmpty() && assist.isBlank() && status is ConnectionStatus.Connected,
-                metrics = metrics,
-                listState = ls,
-                onOpenLink = { url ->
-                    runCatching {
-                        context.startActivity(
-                            android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
-                        )
-                    }
-                },
-            )
+            if (liveFrame != null) {
+                MirrorSurface(
+                    frame = liveFrame,
+                    modifier = Modifier.fillMaxSize(),
+                    onInput = { vm.sendMirrorInput(it, mirrorTarget) },
+                )
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        "connecting to session…",
+                        color = textMuted,
+                        fontFamily = piMono,
+                        fontSize = 13.sp,
+                    )
+                }
+            }
         }
 
-        // Animated working status line — Claude Code "✻ Pondering…" feel.
-        // Hide when in steer mode so the PiPromptRow below becomes usable
-        if (busy && !steerMode) {
-            PiWorkingStatus(
-                busyStartedAt = busyStartedAt,
-                onInterrupt = { steerMode = true }
-            )
-        }
-
-        // Compact turn summary — shows what tools were used in last turn
-        if (!busy && turnSummary != null) {
-            TurnSummaryPanel(turnSummary)
-        }
-
-        // Inline terminal prompt — part of the scrollback, no separator
+        // Inline terminal prompt — the one piece of app chrome over the mirror.
         if (status is ConnectionStatus.Connected) {
             PiTerminalInput(
                 vm = vm,
@@ -1125,7 +1172,7 @@ fun ChatScreen(
                 commands = commands
             )
         }
-        PiFooter(sessions, selectedSession, messages.size, compacting, clientCount)
+        // No app footer: pi's own footer (cwd, model, remote status) is in the mirror.
     }
 }
 

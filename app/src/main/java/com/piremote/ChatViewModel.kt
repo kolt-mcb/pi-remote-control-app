@@ -12,10 +12,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
@@ -131,6 +133,14 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     val connectedScreen = _connectedScreen
     fun showSessionsScreen() { _connectedScreen.value = ConnectedScreen.Sessions }
     fun showChatScreen() { _connectedScreen.value = ConnectedScreen.Chat }
+    // ── Screen mirror ──
+    val mirrorFrame: StateFlow<MirrorFrame?> get() = _ws.mirrorFrameFlow
+    fun setMirror(on: Boolean, agentId: String = "") { _ws.setMirror(on, agentId) }
+    fun sendMirrorInput(data: String, agentId: String = "") { _ws.sendMirrorInput(data, agentId) }
+
+    // ── Host-pushed files ──
+    val fileDownload: StateFlow<FileDownload?> get() = _ws.fileDownloadFlow
+    fun clearFileDownload() { _ws.clearFileDownload() }
 
     val st = ChatUIState(
         serverUrl = _url,
@@ -174,7 +184,8 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     }
 
     fun connect() {
-        val u = _url.value.ifBlank { "" }
+        val u = _url.value.trim()
+        if (u.isBlank()) return   // don't open a socket to "" or pollute URL history
         _url.value = u
         // Persist URL & history in background to avoid blocking the UI thread.
         viewModelScope.launch {
@@ -193,7 +204,10 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         // reconnect stacked another set of persistence/session/FGS collectors
         // on top of the previous ones.
         connectionScope?.cancel()
-        val scope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob())
+        // Parent the SupervisorJob to viewModelScope's Job so onCleared() (which
+        // cancels viewModelScope) also tears these collectors down — a bare
+        // SupervisorJob() would orphan them and leak past the ViewModel.
+        val scope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
         connectionScope = scope
 
         // Load saved messages from DB (IO thread for Room)
@@ -222,15 +236,19 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         scope.launch {
             _ws.busyFlow.collect { busy ->
                 if (busy) return@collect
-                _ws.messageFlow.value.forEachIndexed { idx, m ->
-                    if (m.type == MessageToolType.Streaming) return@forEachIndexed
-                    _dao.insert(ChatMessageEntity(
+                val entities = _ws.messageFlow.value.mapIndexedNotNull { idx, m ->
+                    if (m.type == MessageToolType.Streaming) null
+                    else ChatMessageEntity(
                         msgId = m.id, url = u, seq = idx,
                         type = m.type.name, toolCallId = m.toolCallId,
                         toolName = m.toolName, content = m.content, isError = m.isError,
                         timestamp = m.timestamp
-                    ))
+                    )
                 }
+                // Skip empty lists: a turn-end can fire before history lands, and
+                // replaceAllForUrl on an empty list would wipe the restored chat.
+                if (entities.isEmpty()) return@collect
+                try { _dao.replaceAllForUrl(u, entities) } catch (_: Throwable) {}
             }
         }
         // When the host replaces the session (/new, /resume), the in-memory chat
@@ -335,8 +353,11 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
                         mimeType = uri.substringAfter("data:").substringBefore(";").ifBlank { "image/jpeg" },
                     )
                 }
-                _ws.ensureAgent(_selectedSession.value).messages.value +=
-                    ChatMessage(type = MessageToolType.User, content = t, images = chatImages)
+                // Atomic update: this runs on the main thread while the socket
+                // reader thread also appends to the same flow.
+                _ws.ensureAgent(_selectedSession.value).messages.update {
+                    it + ChatMessage(type = MessageToolType.User, content = t, images = chatImages)
+                }
             }
             _inp.value = ""
             _pendingImages.value = emptyList()
@@ -386,6 +407,14 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
     class Factory(private val ws: PiWebSocket, private val ctx: Context) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(c: Class<T>): T = ChatViewModel(ws, ctx) as T
+    }
+
+    override fun onCleared() {
+        // Tear down per-connection collectors if the VM is cleared while still
+        // connected (Activity finished without routing through disconnect()).
+        connectionScope?.cancel()
+        connectionScope = null
+        super.onCleared()
     }
 
     private fun extractHost(url: String): String {

@@ -39,7 +39,12 @@ class PiWebSocket : WebSocketListener() {
      *  fingerprint the QR carried — no public CA, no hostname matching needed
      *  (we connect by IP). The pin is the *only* trust anchor, so the channel
      *  is end-to-end encrypted between this app and the cert holder. */
-    private fun clientForUrl(url: String): OkHttpClient {
+    // OkHttpClient is designed to be shared; build one per distinct URL and
+    // reuse it so retries don't leak a dispatcher + connection pool per attempt.
+    private val clientCache = java.util.concurrent.ConcurrentHashMap<String, OkHttpClient>()
+    private fun clientForUrl(url: String): OkHttpClient =
+        clientCache.getOrPut(url) { buildClient(url) }
+    private fun buildClient(url: String): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
@@ -92,7 +97,12 @@ class PiWebSocket : WebSocketListener() {
     }
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private val agentMap = mutableMapOf<String, AgentState>()
+    // Pending auto-reconnect work. Tracked so disconnect() can cancel just the
+    // retry without tearing down `scope` (which hosts the long-lived stateIn
+    // sharing coroutines for messageFlow/busyFlow/etc. — cancelling it freezes
+    // the whole UI permanently, since this object is a process-lifetime singleton).
+    @Volatile private var reconnectJob: Job? = null
+    private val agentMap = java.util.concurrent.ConcurrentHashMap<String, AgentState>()
     private val _agents = MutableStateFlow<List<AgentState>>(emptyList())
     val agentsFlow: StateFlow<List<AgentState>> get() = _agents
 
@@ -108,12 +118,18 @@ class PiWebSocket : WebSocketListener() {
      *  `internal` so the ViewModel can locally echo a just-sent message (e.g. a
      *  user prompt with image attachments) onto the active agent before the host
      *  round-trips it back. */
+    // Synchronized because ensureAgent is called from both the OkHttp reader
+    // thread (dispatch) and the main thread (ViewModel local echo). ConcurrentHashMap's
+    // getOrPut extension is get-then-put (not atomic), so the lock is what makes
+    // create-once + the _agents publish race-free.
     internal fun ensureAgent(id: String): AgentState =
-        agentMap.getOrPut(id) {
-            val s = AgentState(id)
-            _agents.value = agentMap.values.toList()
-            if (_selectedAgentId.value == null) _selectedAgentId.value = id
-            s
+        synchronized(agentMap) {
+            agentMap.getOrPut(id) {
+                val s = AgentState(id)
+                _agents.value = agentMap.values.toList()
+                if (_selectedAgentId.value == null) _selectedAgentId.value = id
+                s
+            }
         }
 
     // ── Back-compat flows: follow the selected agent ──────────────────
@@ -124,7 +140,9 @@ class PiWebSocket : WebSocketListener() {
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     private fun <T> agentFlow(selector: (AgentState) -> StateFlow<T>, fallbackFlow: StateFlow<T>): StateFlow<T> =
         _selectedAgentId.flatMapLatest { id ->
-            selector(agentMap[id] ?: return@flatMapLatest fallbackFlow)
+            // id is null until the first event; ConcurrentHashMap.get(null) throws
+            // (unlike the old LinkedHashMap), so guard the null key explicitly.
+            selector((id?.let { agentMap[it] }) ?: return@flatMapLatest fallbackFlow)
         }.stateIn(scope, SharingStarted.Eagerly, fallbackFlow.value)
 
     private val _fallbackMessages = MutableStateFlow<List<ChatMessage>>(emptyList())
@@ -173,6 +191,19 @@ class PiWebSocket : WebSocketListener() {
     // Generic TUI render frames (any Pi extension component)
     private val _renderFrame = MutableStateFlow<RenderFrame?>(null)
     val renderFrameFlow: StateFlow<RenderFrame?> get() = _renderFrame
+    // Screen mirror: composed terminal frames from the host TUI (fork onFrame hook)
+    private val _mirrorFrame = MutableStateFlow<MirrorFrame?>(null)
+    val mirrorFrameFlow: StateFlow<MirrorFrame?> get() = _mirrorFrame
+    // Reconstructed mirror line buffer, for applying row-level diffs (mirror_diff).
+    // The host sends a full mirror_frame keyframe on subscribe, then diffs against
+    // exactly what it last sent us, so this stays in sync. Touched only on the
+    // single OkHttp reader thread (dispatch), so no synchronization needed.
+    private var mirrorBuf: MutableList<String> = mutableListOf()
+    private var mirrorBufAgent: String = ""
+    // Files pushed by the host (piRemote.sendFile) awaiting a save/share decision
+    private val _fileDownload = MutableStateFlow<FileDownload?>(null)
+    val fileDownloadFlow: StateFlow<FileDownload?> get() = _fileDownload
+    fun clearFileDownload() { _fileDownload.value = null }
     // ── Theme ▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸▸
     // Themed palette from the extension (Pi-studio-style). Populated once
     // the host Pi broadcasts theme_info on connect. The Android app mirrors
@@ -228,19 +259,35 @@ class PiWebSocket : WebSocketListener() {
         if (_s.value == ConnectionStatus.Disconnected || _s.value is ConnectionStatus.Error) {
             _s.value = ConnectionStatus.Connecting
         }
+        // Abandon any prior socket first so its callbacks (now stale) don't
+        // interleave events from two connections or trigger a phantom reconnect.
+        sock?.cancel()
         sock = clientForUrl(u).newWebSocket(Request.Builder().url(u).build(), this)
     }
     private fun reconnect() {
         if (pendingUrl.isBlank()) return
         if (_s.value == ConnectionStatus.Connecting) return
         _s.value = ConnectionStatus.Connecting
+        sock?.cancel()
         sock = clientForUrl(pendingUrl).newWebSocket(Request.Builder().url(pendingUrl).build(), this)
     }
     fun disconnect() {
         pendingUrl = ""
         retryCount = 0
+        reconnectJob?.cancel()
+        reconnectJob = null
         sock?.close(1000, null)
-        scope.coroutineContext[Job]?.cancel()
+        // NOTE: do NOT cancel `scope` — it hosts the stateIn sharing coroutines
+        // for the UI-facing flows, and this object is reused across reconnects.
+    }
+
+    // Push a transient notify banner (max 5 kept). Used for host notify events
+    // and to surface dropped sends when the socket is closed/backpressured.
+    private fun pushBanner(msg: String, type: String = "info") {
+        val list = _notifyBanners.value.toMutableList()
+        list.add(BannerMessage(msg, type))
+        while (list.size > 5) list.removeAt(0)
+        _notifyBanners.value = list
     }
 
     fun sendPrompt(txt: String, targetAgentId: String = "") {
@@ -253,7 +300,8 @@ class PiWebSocket : WebSocketListener() {
         if (images.isEmpty()) { send("prompt", txt, targetAgentId); return }
         val target = if (targetAgentId.isNotBlank()) ",\"targetAgentId\":\"${Js.e(targetAgentId)}\"" else ""
         val imgs = images.joinToString(",") { "\"${Js.e(it)}\"" }
-        sock?.send("{\"type\":\"prompt\",\"message\":\"${Js.e(txt)}\",\"images\":[$imgs]$target}")
+        val ok = sock?.send("{\"type\":\"prompt\",\"message\":\"${Js.e(txt)}\",\"images\":[$imgs]$target}") ?: false
+        if (!ok) pushBanner("Not connected — message not sent", "error")
     }
     fun sendSteer(txt: String, targetAgentId: String = "") {
         send("steer", txt, targetAgentId)
@@ -348,6 +396,9 @@ class PiWebSocket : WebSocketListener() {
         // arrives. handleSessions promotes this state onto the real self agent
         // once its id is known.
         const val REPO_PLACEHOLDER_ID = "__repo_placeholder__"
+        // Max base64 length for a host-pushed file (~6 MB decoded), matching the
+        // image cap in PROTOCOL.md.
+        const val MAX_FILE_B64 = 8 * 1024 * 1024
         // Theme name check — compiled once, reused per connect.
         private val THEME_LIGHT_RE = Regex("\\blight\\b", RegexOption.IGNORE_CASE)
         // Message types that carry an agentId and must be routed to the correct AgentState.
@@ -360,7 +411,8 @@ class PiWebSocket : WebSocketListener() {
     }
     private fun send(type: String, txt: String, targetAgentId: String = "") {
         val target = if (targetAgentId.isNotBlank()) ",\"targetAgentId\":\"${Js.e(targetAgentId)}\"" else ""
-        sock?.send("{\"type\":\"$type\",\"message\":\"${Js.e(txt)}\"$target}")
+        val ok = sock?.send("{\"type\":\"$type\",\"message\":\"${Js.e(txt)}\"$target}") ?: false
+        if (!ok) pushBanner("Not connected — message not sent", "error")
     }
 
     // ── Render Protocol ──
@@ -370,13 +422,36 @@ class PiWebSocket : WebSocketListener() {
         sock?.send(json)
     }
 
+    // ── Screen Mirror ──
+    /** Subscribe/unsubscribe to composed terminal frames of one agent (blank = host). */
+    fun setMirror(on: Boolean, agentId: String = "") {
+        val target = if (agentId.isNotBlank()) ",\"agentId\":\"${Js.e(agentId)}\"" else ""
+        sock?.send("{\"type\":\"mirror\",\"on\":$on$target}")
+    }
+    /** Raw input for the mirrored TUI: keys and SGR-encoded taps (ESC sequences included). */
+    fun sendMirrorInput(data: String, agentId: String = "") {
+        val target = if (agentId.isNotBlank()) ",\"agentId\":\"${Js.e(agentId)}\"" else ""
+        sock?.send("{\"type\":\"mirror_input\",\"data\":\"${Js.e(data)}\"$target}")
+    }
+
     override fun onOpen(ws: WebSocket, r: okhttp3.Response) {
+        if (ws !== sock) { ws.cancel(); return }   // stale socket from an abandoned connect
         _s.value = ConnectionStatus.Connected
         retryCount = 0
+        // Re-report the viewport on this fresh connection — the new host needs our
+        // width. Reset here (not in onClosed) so it covers both terminal paths:
+        // a network drop goes through onFailure, which never runs onClosed.
+        lastReportedCols = -1
         // A new socket gets a fresh history replay from the host; until it lands,
         // the DB-cache restore is allowed to populate the chat (and is overridden
         // when the authoritative history arrives moments later).
         historyApplied = false
+        // Capability handshake — FIRST message so it can cancel the host's
+        // deferred history replay. This app is mirror-only (it renders the screen
+        // mirror, not the message-list scrollback), so the host skips shipping the
+        // full conversation history, which was the bulk of connect latency on a
+        // slow link. Old hosts ignore the unknown type and still send history.
+        sock?.send("{\"type\":\"client_hello\",\"mirrorOnly\":true,\"diff\":true}")
         // Request session list and command list on connect
         sock?.send("{\"type\":\"get_sessions\"}")
         sock?.send("{\"type\":\"get_commands\"}")
@@ -385,13 +460,17 @@ class PiWebSocket : WebSocketListener() {
         flushViewport()
     }
     override fun onFailure(ws: WebSocket, t: Throwable, r: okhttp3.Response?) {
+        if (ws !== sock) return   // stale socket we already abandoned
         val msg = t.message ?: "Connection failed"
         // Auto-reconnect with increasing backoff: 2s, 4s, 8s, 16s, then capped
         // at 32s. Runs on `scope` so it's cancellable and consistent with the
         // rest of the class rather than spawning a raw thread per retry.
         if (retryCount < 10 && pendingUrl.isNotBlank()) {
             retryCount++
-            scope.launch {
+            // Reflect the link is down while we back off, instead of leaving the
+            // UI (and FGS notification) claiming a live "Connected" for up to ~32s.
+            _s.value = ConnectionStatus.Connecting
+            reconnectJob = scope.launch {
                 delay(2000L shl minOf(retryCount - 1, 4))
                 reconnect()
             }
@@ -399,20 +478,40 @@ class PiWebSocket : WebSocketListener() {
             _s.value = ConnectionStatus.Error(msg)
         }
     }
+    // Wire throughput accounting (1s window). Enable with:
+    //   adb shell setprop log.tag.PiWireStats DEBUG
+    // The accounting itself is trivial; the isLoggable check runs ~once/sec.
+    private var wireBytes = 0L
+    private var wireFrames = 0
+    private var wireLogAt = 0L
+    private fun accountWire(len: Int) {
+        wireBytes += len
+        wireFrames++
+        val now = System.currentTimeMillis()
+        if (now - wireLogAt >= 1000) {
+            if (Log.isLoggable("PiWireStats", Log.DEBUG)) {
+                Log.d("PiWireStats", "${wireBytes / 1024} KiB/s · $wireFrames frames/s")
+            }
+            wireBytes = 0; wireFrames = 0; wireLogAt = now
+        }
+    }
+
     override fun onMessage(ws: WebSocket, txt: String) {
+        if (ws !== sock) return   // ignore frames from a stale socket
+        accountWire(txt.length)
         try {
             dispatch(txt)
         } catch (t: Throwable) {
-            // Never swallow dispatch errors silently — bad JSON or a null
-            // pointer here would freeze the chat with zero diagnostics.
-            Log.e("PiWebSocket", "dispatch error", t)
-            _s.value = ConnectionStatus.Error("dispatch: ${t.message ?: t.javaClass.simpleName}")
+            // A single malformed/unexpected frame must not flip the connection to
+            // Error — the socket is still healthy and the next frame may be fine.
+            // (Setting Error here also tore down the foreground service mid-session.)
+            // Log loudly with a truncated prefix and keep going.
+            Log.e("PiWebSocket", "dispatch error on frame: ${txt.take(200)}", t)
         }
     }
     override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+        if (ws !== sock) return   // stale socket we already abandoned
         _s.value = ConnectionStatus.Disconnected
-        // Re-report the viewport on the next connect (new host needs our width).
-        lastReportedCols = -1
         // Clear busy on every known agent — no global busy flag now.
         agentMap.values.forEach { it.busy.value = false }
         // A server-initiated close lands here (not onFailure). The host closes
@@ -423,7 +522,7 @@ class PiWebSocket : WebSocketListener() {
         // counts toward the give-up limit (that's what left the app stuck before).
         if (pendingUrl.isNotBlank()) {
             retryCount = 0
-            scope.launch {
+            reconnectJob = scope.launch {
                 delay(600)
                 reconnect()
             }
@@ -509,6 +608,64 @@ class PiWebSocket : WebSocketListener() {
                         inputMode = inputMode,
                         title = title,
                         tapValues = tapValues
+                    )
+                }
+            }
+            // Composed terminal frames from the host TUI (screen mirror).
+            // A full keyframe: replaces the buffer the diffs are applied to.
+            "mirror_frame" -> {
+                val lines = (j["lines"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+                val cur = j["cursor"] as? Map<*, *>
+                val agentId = Js.gets(j, "agentId") ?: ""
+                mirrorBuf = lines.toMutableList()
+                mirrorBufAgent = agentId
+                _mirrorFrame.value = MirrorFrame(
+                    seq = (j["seq"] as? Number)?.toInt() ?: 0,
+                    agentId = agentId,
+                    lines = lines,
+                    cursorRow = (cur?.get("row") as? Number)?.toInt() ?: -1,
+                    cursorCol = (cur?.get("col") as? Number)?.toInt() ?: -1,
+                    width = (j["width"] as? Number)?.toInt() ?: 80,
+                    height = (j["height"] as? Number)?.toInt() ?: 24,
+                )
+            }
+            // Row-level mirror diff: only the changed rows, applied over the buffer
+            // seeded by the last keyframe. Ignored if it's for a different agent
+            // than our buffer holds — a resubscribe sends a fresh keyframe to resync.
+            "mirror_diff" -> {
+                val agentId = Js.gets(j, "agentId") ?: ""
+                if (agentId == mirrorBufAgent) {
+                    val lineCount = (j["lineCount"] as? Number)?.toInt() ?: mirrorBuf.size
+                    val rows = (j["rows"] as? List<*>)?.mapNotNull { row ->
+                        val m = row as? Map<*, *> ?: return@mapNotNull null
+                        val i = (m["i"] as? Number)?.toInt() ?: return@mapNotNull null
+                        i to (m["t"] as? String ?: "")
+                    } ?: emptyList()
+                    com.piremote.tty.applyMirrorDiff(mirrorBuf, lineCount, rows)
+                    val cur = j["cursor"] as? Map<*, *>
+                    _mirrorFrame.value = MirrorFrame(
+                        seq = (j["seq"] as? Number)?.toInt() ?: 0,
+                        agentId = agentId,
+                        lines = mirrorBuf.toList(),
+                        cursorRow = (cur?.get("row") as? Number)?.toInt() ?: -1,
+                        cursorCol = (cur?.get("col") as? Number)?.toInt() ?: -1,
+                        width = (j["width"] as? Number)?.toInt() ?: 80,
+                        height = (j["height"] as? Number)?.toInt() ?: 24,
+                    )
+                }
+            }
+            // A file pushed from the host for the user to save/share
+            "file" -> {
+                val data = Js.gets(j, "data") ?: ""
+                // Cap like images (PROTOCOL.md limits): an unbounded base64 payload
+                // in a StateFlow is an OOM vector from a single frame.
+                if (data.length > MAX_FILE_B64) {
+                    pushBanner("File from pi too large to receive (${data.length / (1024 * 1024)} MiB)", "error")
+                } else if (data.isNotEmpty()) {
+                    _fileDownload.value = FileDownload(
+                        name = (Js.gets(j, "name") ?: "download.bin").substringAfterLast('/'),
+                        mimeType = Js.gets(j, "mimeType") ?: "application/octet-stream",
+                        data = data,
                     )
                 }
             }
@@ -1092,12 +1249,7 @@ class PiWebSocket : WebSocketListener() {
                 else -> "Notification"
             }
             val nt = Js.gets(j, "notifyType") ?: Js.gets(j, "type") ?: "info"
-            val banner = BannerMessage(msg, nt)
-            val list = _notifyBanners.value.toMutableList()
-            list.add(banner)
-            // Keep max 5 banners
-            while (list.size > 5) list.removeAt(0)
-            _notifyBanners.value = list
+            pushBanner(msg, nt)
             return
         }
         if (method == "setTitle") {
@@ -1222,7 +1374,15 @@ object Js {
     }
     fun getBool(m: Map<*, *>, k: String): Boolean? = m[k] as? Boolean
     fun e(s: String): String {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        val basic = s.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        // JSON forbids unescaped control characters; mirror input carries ESC
+        // and other control bytes, so escape the remainder as \u00XX.
+        if (basic.none { it.code < 0x20 }) return basic
+        val sb = StringBuilder(basic.length + 8)
+        for (ch in basic) {
+            if (ch.code < 0x20) sb.append("\\u%04x".format(ch.code)) else sb.append(ch)
+        }
+        return sb.toString()
     }
     /** Round-trip a value parsed by JP back into a JSON string. Counterpart to
      *  PS.pv() — handles the same primitive set the parser produces. */
@@ -1288,6 +1448,24 @@ data class RemoteSession(
 data class BannerMessage(
     val content: String,
     val type: String         // "info" | "warning" | "error"
+)
+
+/** One composed terminal frame from a mirrored pi TUI (host or peer). */
+data class MirrorFrame(
+    val seq: Int,
+    val agentId: String,         // which agent's screen this is
+    val lines: List<String>,     // full composed buffer, ANSI-styled
+    val cursorRow: Int,          // -1 when no cursor
+    val cursorCol: Int,
+    val width: Int,              // host terminal columns
+    val height: Int,             // host terminal rows (viewport = bottom rows)
+)
+
+/** A file pushed from the host, awaiting a user save/share decision. */
+data class FileDownload(
+    val name: String,
+    val mimeType: String,
+    val data: String,            // base64
 )
 
 /** Generic TUI render frame — any Pi extension UI component */

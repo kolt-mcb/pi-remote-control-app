@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.piremote.PiWebSocket
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.piremote.dataStore
@@ -49,8 +51,14 @@ class TestReceiver : BroadcastReceiver() {
             }
             "com.piremote.test.CLEAR_HISTORY" -> {
                 Log.d(TAG, "Clear history")
-                runBlocking {
-                    ctx.dataStore.edit { it[stringSetPreferencesKey("url_history")] = emptySet() }
+                // Off the main thread; goAsync keeps the receiver alive until done.
+                val pending = goAsync()
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        ctx.dataStore.edit { it[stringSetPreferencesKey("url_history")] = emptySet() }
+                    } finally {
+                        pending.finish()
+                    }
                 }
             }
             else -> Log.d(TAG, "Unknown action: ${intent.action}")
