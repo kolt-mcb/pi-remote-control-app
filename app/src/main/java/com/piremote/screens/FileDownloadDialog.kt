@@ -33,7 +33,7 @@ fun FileDownloadDialog(file: FileDownload, onDismiss: () -> Unit) {
     val sizeKb = file.data.length * 3 / 4 / 1024
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("File from pi") },
+        title = { Text(if (file.source.isNotBlank()) "File from ${file.source}" else "File from pi") },
         text = { Text("${file.name}\n${file.mimeType} · ~$sizeKb KB") },
         confirmButton = {
             TextButton(onClick = {

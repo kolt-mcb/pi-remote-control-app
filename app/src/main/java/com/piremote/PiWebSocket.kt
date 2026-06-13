@@ -681,10 +681,18 @@ class PiWebSocket : WebSocketListener() {
                 if (data.length > MAX_FILE_B64) {
                     pushBanner("File from pi too large to receive (${data.length / (1024 * 1024)} MiB)", "error")
                 } else if (data.isNotEmpty()) {
+                    // agentId is stamped by the host (or peer-forward) so the user
+                    // sees which agent sent it. Resolve to a display name.
+                    val agentId = Js.gets(j, "agentId") ?: ""
+                    val source = if (agentId.isNotBlank())
+                        (_sessions.value.firstOrNull { it.id == agentId }?.name
+                            ?: agentMap[agentId]?.name?.ifBlank { null } ?: "")
+                    else ""
                     _fileDownload.value = FileDownload(
                         name = (Js.gets(j, "name") ?: "download.bin").substringAfterLast('/'),
                         mimeType = Js.gets(j, "mimeType") ?: "application/octet-stream",
                         data = data,
+                        source = source,
                     )
                 }
             }
@@ -1485,6 +1493,7 @@ data class FileDownload(
     val name: String,
     val mimeType: String,
     val data: String,            // base64
+    val source: String = "",     // sending agent's display name (peer-aware), "" if host/unknown
 )
 
 /** Generic TUI render frame — any Pi extension UI component */
