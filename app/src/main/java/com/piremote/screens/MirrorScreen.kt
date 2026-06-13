@@ -55,17 +55,26 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
     }
 
     val listState = rememberLazyListState()
-    // Follow the live bottom of the buffer, but never fight the user's finger:
-    // stop following the moment they scroll, resume when they settle at the bottom.
+    // Start pinned to the latest content and follow the live bottom — but never
+    // fight the user's finger. Only an ACTIVE user scroll turns follow off; on
+    // initial layout (list at the top, last line not yet visible) we must NOT turn
+    // it off, or the connect-time scroll-to-bottom gets cancelled and the view
+    // opens at the top of the scrollback.
     var followBottom by remember { mutableStateOf(true) }
     LaunchedEffect(listState.isScrollInProgress) {
-        if (!listState.isScrollInProgress) {
-            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()
-            followBottom = last == null || last.index >= frame.lines.size - 1
+        if (listState.isScrollInProgress) {
+            followBottom = false
+        } else {
+            // Settled: resume follow only if we're at the bottom; otherwise leave
+            // followBottom as-is (don't clobber the initial true).
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            if (last == null || last.index >= info.totalItemsCount - 1) followBottom = true
         }
     }
-    // Stick to the bottom as new frames arrive: scrollToItem(last) clamps to the
-    // end, leaving the latest line at the viewport bottom.
+    // Stick to the bottom as new frames arrive (and on the first frame after
+    // connect): scrollToItem(last) clamps to the end, leaving the latest line at
+    // the viewport bottom.
     LaunchedEffect(frame.seq) {
         if (followBottom && frame.lines.isNotEmpty() && !listState.isScrollInProgress) {
             listState.scrollToItem(frame.lines.size - 1)
