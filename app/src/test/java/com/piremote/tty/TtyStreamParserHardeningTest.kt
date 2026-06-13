@@ -85,4 +85,30 @@ class TtyStreamParserHardeningTest {
         val item = parseMirrorLine("${esc}[31mjust text${esc}[0m")
         assertTrue(item is MirrorItem.Line)
     }
+
+    /** Faithful reproduction of pi-tui's encodeKitty output for a >4 KiB image
+     *  (full param set incl. q=2/C=1/c/r, chunked at 4096, i only on the first
+     *  chunk, all chunks back-to-back on ONE line) — the exact shape the host
+     *  mirror now emits. Must decode to a single image with the full base64. */
+    @Test fun parseMirrorLine_decodes_full_pitui_kitty_image() {
+        val b64 = "ABCD".repeat(2500) // 10000 valid base64 chars → 3 chunks (4096/4096/1808)
+        val sb = StringBuilder()
+        var off = 0
+        var first = true
+        while (off < b64.length) {
+            val chunk = b64.substring(off, minOf(off + 4096, b64.length))
+            val last = off + 4096 >= b64.length
+            sb.append(esc).append("_G")
+            when {
+                first -> { sb.append("a=T,f=100,q=2,C=1,c=20,r=10,i=42,m=1"); first = false }
+                last -> sb.append("m=0")
+                else -> sb.append("m=1")
+            }
+            sb.append(';').append(chunk).append(st)
+            off += 4096
+        }
+        val item = parseMirrorLine(sb.toString())
+        assertTrue("expected an image item, got $item", item is MirrorItem.Img)
+        assertEquals(b64, (item as MirrorItem.Img).image.base64)
+    }
 }
