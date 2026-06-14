@@ -1,6 +1,9 @@
 package com.piremote.screens
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
+import android.util.Base64
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -13,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,6 +26,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -40,6 +45,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import com.piremote.ChatImage
 import com.piremote.ChatMessage
 import com.piremote.MessageToolType
@@ -47,6 +53,11 @@ import com.piremote.theme.*
 import com.piremote.tty.AnsiStyle
 import com.piremote.tty.CellSpec
 import com.piremote.tty.TtyBlock
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /** Measured monospace grid metrics for the scrollback viewport. */
 data class TtyMetrics(
@@ -310,6 +321,8 @@ private fun TtyBrailleFallback(block: TtyBlock.Image, metrics: TtyMetrics) {
 
 @Composable
 fun ImageViewerDialog(image: TtyBlock.Image, onDismiss: () -> Unit) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -344,6 +357,55 @@ fun ImageViewerDialog(image: TtyBlock.Image, onDismiss: () -> Unit) {
                         },
                 )
             } ?: Text("[image failed to decode]", color = Color.White, fontFamily = piMono)
+
+            // Top bar: Save (system share/save sheet) + Close. The buttons consume
+            // their own taps, so they don't trigger the tap-to-dismiss on the
+            // background. Pinch/drag still zooms and pans the image.
+            Row(
+                modifier = Modifier.align(Alignment.TopEnd).padding(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (bitmap != null) {
+                    TextButton(onClick = { saveImage(ctx, scope, image) }) {
+                        Text("Save", color = Color.White, fontFamily = piMono)
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Close", color = Color.White, fontFamily = piMono)
+                }
+            }
+        }
+    }
+}
+
+/** Write the image to cache/shared/ and offer the system share/save sheet — the
+ *  same path FileDownloadDialog uses (covers "Save to Files", gallery, sharing).
+ *  Decode + write happen off the main thread. */
+private fun saveImage(ctx: Context, scope: CoroutineScope, image: TtyBlock.Image) {
+    scope.launch {
+        val uri = withContext(Dispatchers.IO) {
+            try {
+                val dir = File(ctx.cacheDir, "shared").apply { mkdirs() }
+                val ext = when (image.mimeType) {
+                    "image/jpeg" -> "jpg"
+                    "image/gif" -> "gif"
+                    "image/webp" -> "webp"
+                    else -> "png"
+                }
+                val out = File(dir, "pi-image.$ext")
+                out.writeBytes(Base64.decode(image.base64, Base64.DEFAULT))
+                FileProvider.getUriForFile(ctx, ctx.packageName + ".updates", out)
+            } catch (_: Exception) {
+                null
+            }
+        }
+        if (uri != null) {
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = image.mimeType.ifBlank { "image/png" }
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            try { ctx.startActivity(Intent.createChooser(send, "Save / Share image")) } catch (_: Exception) {}
         }
     }
 }

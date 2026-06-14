@@ -61,6 +61,9 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
     // it off, or the connect-time scroll-to-bottom gets cancelled and the view
     // opens at the top of the scrollback.
     var followBottom by remember { mutableStateOf(true) }
+    // Tapping an inline image opens the fullscreen viewer (zoom + save), instead
+    // of forwarding the tap as an SGR click to the host.
+    var viewerImage by remember { mutableStateOf<TtyBlock.Image?>(null) }
     LaunchedEffect(listState.isScrollInProgress) {
         if (listState.isScrollInProgress) {
             followBottom = false
@@ -103,12 +106,19 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
                             down.position.y >= it.offset && down.position.y < it.offset + it.size
                         }
                         val lineIdx = hit?.index ?: listState.firstVisibleItemIndex
-                        val viewportTop = maxOf(0, frame.lines.size - frame.height)
-                        val row = lineIdx - viewportTop + 1
-                        val col = (down.position.x / cellWidth).toInt() + 1
-                        if (row in 1..frame.height && col in 1..frame.width) {
-                            onInput("$ESC[<0;$col;${row}M") // press
-                            onInput("$ESC[<0;$col;${row}m") // release
+                        val tapped = frame.lines.getOrNull(lineIdx)?.let { parseMirrorLine(it) }
+                        if (tapped is MirrorItem.Img) {
+                            // Tap on an inline image → open the viewer (zoom + save),
+                            // don't forward it as a terminal click.
+                            viewerImage = tapped.image
+                        } else {
+                            val viewportTop = maxOf(0, frame.lines.size - frame.height)
+                            val row = lineIdx - viewportTop + 1
+                            val col = (down.position.x / cellWidth).toInt() + 1
+                            if (row in 1..frame.height && col in 1..frame.width) {
+                                onInput("$ESC[<0;$col;${row}M") // press
+                                onInput("$ESC[<0;$col;${row}m") // release
+                            }
                         }
                     }
                     // up == null → held past long-press: leave it for
@@ -139,6 +149,10 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
                 }
             }
         }
+    }
+
+    viewerImage?.let { img ->
+        ImageViewerDialog(img) { viewerImage = null }
     }
 }
 
