@@ -26,22 +26,62 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import com.piremote.MirrorFrame
+import com.piremote.theme.accent
 import com.piremote.theme.bg
 import com.piremote.theme.textMuted
+import com.piremote.tty.AnsiStyle
 import com.piremote.tty.MirrorItem
 import com.piremote.tty.TtyBlock
 import com.piremote.tty.parseMirrorLine
 import kotlinx.coroutines.withTimeoutOrNull
 
 private const val ESC = "\u001b"
+
+/** A clickable link inside one rendered line: [start, end) are 0-based column
+ *  (== character) indices into the line's text. */
+private data class LinkSpan(val start: Int, val end: Int, val url: String)
+
+// Bare URLs in plain text (http/https/www) — pi doesn't mark these as OSC 8
+// links, so we detect them client-side. Trailing sentence punctuation is
+// trimmed off the match below.
+private val URL_REGEX = Regex("""(https?://|www\.)\S+""", RegexOption.IGNORE_CASE)
+
+/** Link ranges for a line: OSC 8 hyperlinks (carried on [AnsiStyle.link]) plus
+ *  bare URLs found in the text. Bare URLs are skipped where they'd overlap an
+ *  OSC 8 link. Columns are character offsets into the concatenated line text. */
+private fun linkSpansForLine(segments: List<Pair<String, AnsiStyle>>): List<LinkSpan> {
+    val spans = mutableListOf<LinkSpan>()
+    var col = 0
+    for ((text, st) in segments) {
+        val link = st.link
+        if (!link.isNullOrBlank()) spans.add(LinkSpan(col, col + text.length, link))
+        col += text.length
+    }
+    val full = segments.joinToString("") { it.first }
+    for (m in URL_REGEX.findAll(full)) {
+        val trimmed = m.value.trimEnd('.', ',', ';', ':', ')', ']', '}', '>', '"', '\'', '!', '?')
+        if (trimmed.isEmpty()) continue
+        val start = m.range.first
+        val end = start + trimmed.length
+        // Don't double-mark text that's already an OSC 8 link.
+        if (spans.any { start < it.end && end > it.start }) continue
+        val href = if (trimmed.startsWith("www.", ignoreCase = true)) "https://$trimmed" else trimmed
+        spans.add(LinkSpan(start, end, href))
+    }
+    return spans
+}
 
 /**
  * Live terminal render of a pi session (tty mirror). Drop-in content for the
@@ -58,6 +98,7 @@ fun MirrorSurface(
 ) {
     val fontSize = 12.sp
     val density = LocalDensity.current
+    val uriHandler = LocalUriHandler.current
     // Measure the real glyph ADVANCE (width) so taps map to the host's columns.
     val measurer = rememberTextMeasurer()
     val cellWidth = remember(fontSize, density) {
@@ -151,17 +192,26 @@ fun MirrorSurface(
                             // don't forward it as a terminal click.
                             viewerImage = tapped.image
                         } else {
-                            val viewportTop = maxOf(0, frame.lines.size - frame.height)
-                            val row = lineIdx - viewportTop + 1
-                            val col = (down.position.x / cellWidth).toInt() + 1
-                            if (row in 1..frame.height && col in 1..frame.width) {
-                                onInput("$ESC[<0;$col;${row}M") // press
-                                onInput("$ESC[<0;$col;${row}m") // release
+                            val col0 = (down.position.x / cellWidth).toInt() // 0-based
+                            // A tap on a link opens it (OSC 8 or a bare URL) and
+                            // does NOT send an SGR click or raise the keyboard.
+                            val link = (tapped as? MirrorItem.Line)?.let { linkSpansForLine(it.segments) }
+                                ?.firstOrNull { col0 >= it.start && col0 < it.end }
+                            if (link != null) {
+                                try { uriHandler.openUri(link.url) } catch (_: Exception) {}
+                            } else {
+                                val viewportTop = maxOf(0, frame.lines.size - frame.height)
+                                val row = lineIdx - viewportTop + 1
+                                val col = col0 + 1
+                                if (row in 1..frame.height && col in 1..frame.width) {
+                                    onInput("$ESC[<0;$col;${row}M") // press
+                                    onInput("$ESC[<0;$col;${row}m") // release
+                                }
+                                // Tapping the terminal also raises the keyboard so you
+                                // can type straight into pi's prompt (the capture field
+                                // is invisible — the terminal itself is the input).
+                                onRequestKeyboard()
                             }
-                            // Tapping the terminal also raises the keyboard so you
-                            // can type straight into pi's prompt (the capture field
-                            // is invisible — the terminal itself is the input).
-                            onRequestKeyboard()
                         }
                     }
                     // up == null → held past long-press: leave it for
@@ -177,8 +227,21 @@ fun MirrorSurface(
                 val item = remember(raw) { parseMirrorLine(raw) }
                 when (item) {
                     is MirrorItem.Line -> {
-                        val styled = remember(raw) { buildAnsiText(item.segments) }
                         val segs = item.segments
+                        // Base ANSI styling, then overlay accent + underline on any
+                        // link runs (OSC 8 or detected URLs) so they look tappable.
+                        val styled = remember(raw) {
+                            val base = buildAnsiText(segs)
+                            val links = linkSpansForLine(segs)
+                            if (links.isEmpty()) base
+                            else buildAnnotatedString {
+                                append(base)
+                                for (s in links) addStyle(
+                                    SpanStyle(color = accent, textDecoration = TextDecoration.Underline),
+                                    s.start, s.end.coerceAtMost(base.length),
+                                )
+                            }
+                        }
                         Text(
                             text = styled,
                             style = lineStyle,
