@@ -48,6 +48,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.asImageBitmap
 import com.piremote.theme.*
 import com.piremote.tty.parseAnsiLine
@@ -1034,6 +1037,7 @@ fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect:
 
 // ── Pi Terminal Chat Screen ────────────────────────────────────────────
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun ChatScreen(
     vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>,
@@ -1059,19 +1063,6 @@ fun ChatScreen(
         if (last > 0) ls.animateScrollToItem(last)
     }
 
-    // Mode state lifted up so PiWorkingStatus can flip it on tap-to-interrupt.
-    var steerMode by remember { mutableStateOf(false) }
-    var followUpMode by remember { mutableStateOf(false) }
-    // Reset modes when busy changes — busy→idle clears steer; idle→busy clears follow-up.
-    LaunchedEffect(busy) {
-        if (!busy) steerMode = false
-        else followUpMode = false
-    }
-    // Track when busy started so the working status line can show elapsed seconds.
-    var busyStartedAt by remember { mutableStateOf(0L) }
-    LaunchedEffect(busy) {
-        if (busy) busyStartedAt = System.currentTimeMillis()
-    }
 
         // Mirror state computed up front: when a live frame is showing, the
         // mirror already renders pi's FULL screen (its loader, status line,
@@ -1134,6 +1125,17 @@ fun ChatScreen(
             )
         }
 
+        // Shared keystroke-capture focus: tapping the mirror raises the soft
+        // keyboard by focusing the (invisible) capture field in the bar below.
+        val ttyFocus = remember { FocusRequester() }
+        val keyboardController = LocalSoftwareKeyboardController.current
+        val openKeyboard: () -> Unit = {
+            // requestFocus() shows the IME when unfocused; show() re-raises it if
+            // the field is already focused but the keyboard was dismissed.
+            try { ttyFocus.requestFocus() } catch (_: Exception) {}
+            keyboardController?.show()
+        }
+
         // The mirror IS the session view — it renders pi's whole screen (status,
         // widgets, loader, footer). No legacy scrollback or duplicate chrome; a
         // neutral placeholder shows until the first frame arrives (no UI flash).
@@ -1146,6 +1148,7 @@ fun ChatScreen(
                     frame = liveFrame,
                     modifier = Modifier.fillMaxSize(),
                     onInput = { vm.sendMirrorInput(it, mirrorTarget) },
+                    onRequestKeyboard = openKeyboard,
                 )
             } else {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1159,18 +1162,11 @@ fun ChatScreen(
             }
         }
 
-        // Inline terminal prompt — the one piece of app chrome over the mirror.
+        // Type straight into pi's terminal: a special-key row (esc/ctrl/alt/arrows)
+        // above the keyboard plus hidden keystroke capture, both forwarding raw
+        // bytes to the mirror's PTY. No separate chat box — pi echoes what you type.
         if (status is ConnectionStatus.Connected) {
-            PiTerminalInput(
-                vm = vm,
-                input = input,
-                busy = busy,
-                steerMode = steerMode,
-                setSteerMode = { steerMode = it },
-                followUpMode = followUpMode,
-                setFollowUpMode = { followUpMode = it },
-                commands = commands
-            )
+            TtyKeyboardBar(vm = vm, agentId = mirrorTarget, focusRequester = ttyFocus)
         }
         // No app footer: pi's own footer (cwd, model, remote status) is in the mirror.
     }
@@ -1242,265 +1238,6 @@ fun PiBlinkBlock(color: Color = accent) {
     )
 }
 
-// ── Terminal-style inline input (live prompt) ─────────────────────────
-
-/**
- * Bare terminal prompt rendered below the scrollback with no visual
- * separation — just `>` sigil + TextField, same bg, same font, same padding.
- */
-@Composable
-fun PiTerminalInput(
-    vm: ChatViewModel, input: String, busy: Boolean,
-    steerMode: Boolean,
-    setSteerMode: (Boolean) -> Unit,
-    followUpMode: Boolean,
-    setFollowUpMode: (Boolean) -> Unit,
-    commands: List<RemoteCommand> = emptyList()
-) {
-    // Image picker — opens the system gallery/camera picker
-    val context = LocalContext.current
-    val imagePickerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        uri?.let {
-            try {
-                val bytes = context.contentResolver.openInputStream(it)?.use { stream ->
-                    stream.readBytes()
-                }
-                if (bytes != null) {
-                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                    val mime = context.contentResolver.getType(it)?.takeIf { m -> m.startsWith("image/") } ?: "image/jpeg"
-                    val dataUri = "data:$mime;base64,$base64"
-                    vm.addPendingImage(dataUri)
-                }
-            } catch (_: Exception) {}
-        }
-    }
-    val pendingImages = vm._pendingImages.collectAsState()
-    // ── Slash command autocomplete row ─────────────────────────────
-    val isSlash = input.trimStart().startsWith("/") && !busy
-    val slashQuery = if (isSlash) {
-        val after = input.trimStart().substringAfter("/", "")
-        after.trim().lowercase().split(" ")[0]
-    } else ""
-    val matchedCommands = if (slashQuery.isBlank()) {
-        commands
-    } else {
-        commands.filter { it.name.lowercase().startsWith(slashQuery) }
-    }
-    val showAutocomplete = isSlash && matchedCommands.isNotEmpty()
-    val cursorColor = when {
-        steerMode -> thinkingMedium
-        followUpMode -> accent
-        else -> accent
-    }
-    val placeholder = when {
-        steerMode -> "Steer agent mid-flight…"
-        followUpMode -> "Follow-up to previous turn…"
-        busy -> "(agent busy — tap to steer)"
-        else -> ""
-    }
-
-    Column(modifier = Modifier.fillMaxWidth().background(bg).imePadding()) {
-        // ── Slash command autocomplete — pi-tui SelectList look ─────────
-        // Sits above the prompt (keyboard is below), so it stays visible.
-        if (showAutocomplete) {
-            PiSlashAutocomplete(matchedCommands, slashQuery) { name -> vm.setInputText("/$name") }
-        }
-        // ── Pending image thumbnails ──────────────────────────────────
-        if (pendingImages.value.isNotEmpty()) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                modifier = Modifier.padding(start = 20.dp, top = 2.dp, bottom = 2.dp, end = 6.dp)
-            ) {
-                pendingImages.value.forEachIndexed { i, dataUri ->
-                    // Extract base64 from data URI for thumbnail preview
-                    val base64 = dataUri.substringAfter("base64,")
-                    val mime = dataUri.substringAfter("data:").substringBefore(";")
-                    val bitmap = remember(base64) {
-                        try {
-                            val bytes = Base64.decode(base64, Base64.NO_WRAP)
-                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                        } catch (_: Exception) { null }
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(56.dp)
-                            .border(1.dp, accent, RoundedCornerShape(4.dp))
-                            .background(selectedBg)
-                    ) {
-                        bitmap?.let {
-                            Image(
-                                bitmap = it,
-                                contentDescription = "Pending image ${i + 1}",
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clickable { vm.removePendingImage(dataUri) }
-                                    .clip(RoundedCornerShape(3.dp)),
-                                contentScale = androidx.compose.ui.layout.ContentScale.Crop
-                            )
-                        }
-                        // Remove indicator (X in top-right)
-                        Text(
-                            "✕",
-                            color = error,
-                            fontFamily = piMono,
-                            fontSize = 8.sp,
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .clickable { vm.removePendingImage(dataUri) }
-                                .padding(1.dp)
-                        )
-                    }
-                }
-            }
-        }
-        // One submit path for the IME Send key AND the on-screen send button.
-        // Slash commands always run as commands — even mid-run in steer mode.
-        val submit = {
-            val trimmed = input.trim()
-            when {
-                trimmed.startsWith("/") && trimmed.length > 1 -> {
-                    val spaceIdx = trimmed.indexOf(' ')
-                    val cmd = if (spaceIdx > 1) trimmed.substring(1, spaceIdx) else trimmed.substring(1)
-                    val args = if (spaceIdx > 1) trimmed.substring(spaceIdx + 1).trim() else ""
-                    vm.sendSlashCommand(cmd, args)
-                    vm.setInputText("")
-                    setSteerMode(false)
-                }
-                steerMode || (busy && !followUpMode) -> { vm.sendSteer(); setSteerMode(false) }
-                followUpMode -> { vm.sendFollowUp(); setFollowUpMode(false) }
-                trimmed.isNotEmpty() || pendingImages.value.isNotEmpty() -> {
-                    if (pendingImages.value.isNotEmpty()) vm.sendPromptWithImages()
-                    else vm.sendPrompt()
-                }
-                else -> {}
-            }
-        }
-        // Row: `>` + TextField + send + image picker
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 2.dp)
-        ) {
-        PiBlinkSigil(sigil = ">", color = cursorColor, active = input.isEmpty())
-        Spacer(Modifier.width(4.dp))
-        TextField(
-            value = input,
-            onValueChange = { vm.setInputText(it) },
-            placeholder = {
-                if (placeholder.isNotBlank()) Text(placeholder, color = textMuted, fontFamily = piMono, fontSize = 13.sp)
-            },
-            modifier = Modifier
-                .weight(1f)
-                // Tapping the field while the agent runs = steering, like typing
-                // in pi's terminal mid-run. No separate "tap to interrupt" needed.
-                .onFocusChanged { st ->
-                    if (st.isFocused && busy && !steerMode && !followUpMode) setSteerMode(true)
-                },
-            maxLines = 4, singleLine = false,
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = bg, unfocusedContainerColor = bg,
-                focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
-                focusedTextColor = textPrimary, unfocusedTextColor = textPrimary,
-                focusedPlaceholderColor = textMuted, unfocusedPlaceholderColor = textMuted,
-                cursorColor = cursorColor
-            ),
-            textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 13.sp),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(onSend = { submit() })
-        )
-        // Visible send button — multiline fields make many keyboards show
-        // Enter-as-newline instead of an IME Send key, so don't rely on it.
-        if (input.isNotBlank() || pendingImages.value.isNotEmpty()) {
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clickable { submit() },
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    "⏎",
-                    color = cursorColor,
-                    fontFamily = piMono,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-        // Image picker button — opens system image picker
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                // Always available: images picked while busy queue as pending
-                // thumbnails and ride along with the next prompt.
-                .clickable {
-                    imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                "📎",
-                fontSize = 16.sp,
-                modifier = Modifier.padding(2.dp)
-            )
-        }
-        }
-    }
-}
-
-/**
- * Slash-command autocomplete, reproduced to match pi's TTY: pi-tui's SelectList.
- * Vertical list, `→ ` arrow on the best (selected) match drawn in accent, the
- * name in a left column, a muted description, and `(i/n)` when it overflows —
- * mirroring SelectList.render + getSelectListTheme (selected→accent, desc→muted).
- */
-@Composable
-fun PiSlashAutocomplete(commands: List<RemoteCommand>, query: String, onPick: (String) -> Unit) {
-    // pi seeds the selection to the first prefix match (getBestAutocompleteMatchIndex).
-    val bestIdx = commands.indexOfFirst { it.name.lowercase().startsWith(query) }.coerceAtLeast(0)
-    // Primary column width: clamp(widest name + 2-col gap, 12, 32) — pi's layout.
-    val colW = (commands.maxOf { it.name.length } + 2).coerceIn(12, 32)
-    // pi caps visible rows and scrolls via keyboard; on touch we bound the height
-    // and let the whole matched set scroll, so every command stays reachable.
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(max = 200.dp)
-            .verticalScroll(rememberScrollState())
-            .background(bg)
-            .padding(start = 8.dp, end = 6.dp, top = 2.dp, bottom = 2.dp)
-    ) {
-        commands.forEachIndexed { idx, cmd ->
-            val selected = idx == bestIdx
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onPick(cmd.name) }
-                    .padding(vertical = 1.dp)
-            ) {
-                // arrow(2) + name padded to colW; monospace keeps the column aligned.
-                Text(
-                    text = (if (selected) "→ " else "  ") + cmd.name.padEnd(colW),
-                    color = if (selected) accent else textPrimary,
-                    fontFamily = piMono, fontSize = 12.sp, maxLines = 1, softWrap = false
-                )
-                if (cmd.description.isNotBlank()) {
-                    Text(
-                        text = cmd.description,
-                        color = if (selected) accent else textMuted,
-                        fontFamily = piMono, fontSize = 12.sp,
-                        maxLines = 1, overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-        }
-    }
-}
-
 /**
  * pi's startup header, reproduced for the phone so a fresh connection greets
  * you the way pi's terminal does. pi prints (interactive-mode): an accent logo,
@@ -1525,25 +1262,6 @@ fun PiStartupHeader() {
             color = textMuted, fontFamily = piMono, fontSize = 12.sp, lineHeight = 17.sp
         )
     }
-}
-
-/** Blinking `>` prompt sigil. Stops blinking once the user has typed. */
-@Composable
-fun PiBlinkSigil(sigil: String, color: Color, active: Boolean) {
-    val on by produceState(initialValue = true, key1 = active) {
-        if (!active) return@produceState
-        var state = true
-        while (true) {
-            kotlinx.coroutines.delay(550)
-            state = !state
-            value = state
-        }
-    }
-    Text(
-        sigil,
-        color = if (on) color else color.copy(alpha = 0.25f),
-        fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold
-    )
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 package com.piremote.screens
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -9,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -16,16 +18,23 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import com.piremote.MirrorFrame
+import com.piremote.theme.bg
 import com.piremote.theme.textMuted
 import com.piremote.tty.MirrorItem
 import com.piremote.tty.TtyBlock
@@ -41,7 +50,12 @@ private const val ESC = "\u001b"
  * the tapped cell, so anything clickable on the desktop is tappable here.
  */
 @Composable
-fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> Unit) {
+fun MirrorSurface(
+    frame: MirrorFrame,
+    modifier: Modifier,
+    onInput: (String) -> Unit,
+    onRequestKeyboard: () -> Unit = {},
+) {
     val fontSize = 12.sp
     val density = LocalDensity.current
     // Measure the real glyph ADVANCE (width) so taps map to the host's columns.
@@ -52,6 +66,31 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
             TextStyle(fontFamily = piMono, fontSize = fontSize),
         )
         r.size.width / 100f
+    }
+
+    // One TextStyle for every terminal row: font padding OFF + centered line
+    // height, so each single-line row measures to the SAME whole-pixel height.
+    // With default font padding, rows are a fractional pixel tall and the list
+    // can't tile them to the device pixel grid — leaving 1px seams between
+    // background-filled lines (the faint horizontal lines). Uniform integer rows
+    // remove that.
+    val lineStyle = remember(fontSize) {
+        TextStyle(
+            fontFamily = piMono,
+            fontSize = fontSize,
+            lineHeight = fontSize,
+            lineHeightStyle = LineHeightStyle(
+                alignment = LineHeightStyle.Alignment.Center,
+                trim = LineHeightStyle.Trim.None,
+            ),
+            platformStyle = PlatformTextStyle(includeFontPadding = false),
+        )
+    }
+    // Whole-pixel row height measured with that exact style, pinned on every row
+    // so adjacent rows abut precisely (no sub-pixel drift, no seams).
+    val cellHeight = remember(lineStyle, density) {
+        val r = measurer.measure(AnnotatedString("0"), lineStyle)
+        with(density) { r.size.height.toDp() }
     }
 
     val listState = rememberLazyListState()
@@ -92,7 +131,7 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
     SelectionContainer {
         LazyColumn(
             state = listState,
-            modifier = modifier.fillMaxSize().pointerInput(frame.width, frame.height) {
+            modifier = modifier.fillMaxSize().background(bg).pointerInput(frame.width, frame.height) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val up = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
@@ -119,6 +158,10 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
                                 onInput("$ESC[<0;$col;${row}M") // press
                                 onInput("$ESC[<0;$col;${row}m") // release
                             }
+                            // Tapping the terminal also raises the keyboard so you
+                            // can type straight into pi's prompt (the capture field
+                            // is invisible — the terminal itself is the input).
+                            onRequestKeyboard()
                         }
                     }
                     // up == null → held past long-press: leave it for
@@ -135,14 +178,35 @@ fun MirrorSurface(frame: MirrorFrame, modifier: Modifier, onInput: (String) -> U
                 when (item) {
                     is MirrorItem.Line -> {
                         val styled = remember(raw) { buildAnsiText(item.segments) }
+                        val segs = item.segments
                         Text(
                             text = styled,
-                            fontFamily = piMono,
-                            fontSize = fontSize,
-                            lineHeight = fontSize,
+                            style = lineStyle,
                             softWrap = false,
                             maxLines = 1,
                             overflow = TextOverflow.Clip,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(cellHeight)
+                                // Paint each run's background ourselves, full row
+                                // height and edge-to-edge, so background-filled rows
+                                // tile with no gap. SpanStyle backgrounds only cover
+                                // the tight text box, which left 1px seams between
+                                // rows (the faint horizontal lines).
+                                .drawBehind {
+                                    var x = 0f
+                                    for ((text, st) in segs) {
+                                        val w = text.length * cellWidth
+                                        if (st.bgR >= 0) {
+                                            drawRect(
+                                                color = Color(st.bgR / 255f, st.bgG / 255f, st.bgB / 255f),
+                                                topLeft = Offset(x, 0f),
+                                                size = Size(w, size.height),
+                                            )
+                                        }
+                                        x += w
+                                    }
+                                },
                         )
                     }
                     is MirrorItem.Img -> MirrorImageItem(item.image)
