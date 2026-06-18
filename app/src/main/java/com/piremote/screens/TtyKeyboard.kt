@@ -21,6 +21,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -128,7 +129,11 @@ class StickyMods {
 @Composable
 fun TtyKeyboardBar(vm: ChatViewModel, agentId: String, focusRequester: FocusRequester) {
     val mods = remember { StickyMods() }
+    var syncEpoch by remember { mutableStateOf(0) }
     val send: (String) -> Unit = { if (it.isNotEmpty()) vm.sendMirrorInput(it, agentId) }
+    // Special keys / paste change pi's prompt outside the typing buffer; bump the
+    // epoch so the capture resyncs (then typing appends from pi's cursor).
+    val sendExternal: (String) -> Unit = { if (it.isNotEmpty()) { syncEpoch++; vm.sendMirrorInput(it, agentId) } }
 
     // Image picker — images can't be typed as bytes, so they stay on the
     // semantic prompt path: pick one and it's sent to the selected session.
@@ -156,7 +161,7 @@ fun TtyKeyboardBar(vm: ChatViewModel, agentId: String, focusRequester: FocusRequ
     Column(modifier = Modifier.fillMaxWidth().background(bg).imePadding()) {
         ModifierKeyRow(
             mods = mods,
-            onBytes = send,
+            onBytes = sendExternal,
             onPickImage = {
                 imagePicker.launch(
                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -164,10 +169,10 @@ fun TtyKeyboardBar(vm: ChatViewModel, agentId: String, focusRequester: FocusRequ
             },
             onPaste = {
                 val pasted = clipboard.getText()?.text
-                if (!pasted.isNullOrEmpty()) send(TtyKeys.bracketedPaste(pasted))
+                if (!pasted.isNullOrEmpty()) sendExternal(TtyKeys.bracketedPaste(pasted))
             },
         )
-        TtyInputCapture(mods = mods, focusRequester = focusRequester, onBytes = send)
+        TtyInputCapture(mods = mods, focusRequester = focusRequester, onBytes = send, syncEpoch = syncEpoch)
     }
 }
 
@@ -224,51 +229,77 @@ private fun KeyCap(label: String, active: Boolean = false, onClick: () -> Unit) 
 }
 
 /**
- * Invisible keystroke capture. A [BasicTextField] holds a fixed "sacrificial"
- * baseline buffer with the cursor pinned at its end; on every change we diff
- * against the baseline to recover what the IME did — appended chars are typed
- * input, a shorter value is a backspace — then reset to the baseline so the
- * field never grows and no composing region lingers. This is the standard way to
- * get reliable per-character input from Android soft keyboards (which talk via
- * InputConnection, not KeyEvents). Typed text is rendered transparent; the real
- * cursor and echo live in pi's prompt inside the mirror.
+ * Send the byte ops that turn pi's current line [old] into [new]: backspace the
+ * characters that changed (from the first difference to the end), then type the
+ * corrected tail. Because we always delete from the end and retype, the result
+ * matches [new] regardless of where the change was — as long as pi's cursor is at
+ * the line end (true for normal typing).
+ */
+private fun reconcile(old: String, new: String, onBytes: (String) -> Unit) {
+    var p = 0
+    val n = minOf(old.length, new.length)
+    while (p < n && old[p] == new[p]) p++
+    val dels = old.length - p
+    if (dels > 0) onBytes(TtyKeys.DEL.repeat(dels))
+    if (p < new.length) onBytes(new.substring(p))
+}
+
+/**
+ * Invisible keystroke capture with a reconciling buffer. The [BasicTextField]
+ * holds a real, editable copy of the line you're typing — so the IME keeps a
+ * live composing word and **autocorrect / suggestions work**. On every change we
+ * [reconcile] the buffer against [sent] (what pi's prompt already shows): we send
+ * backspaces for the changed tail, then the corrected text. So when autocorrect
+ * rewrites "teh " → "the ", pi gets DEL×3 + "he ". The field is invisible; pi
+ * echoes the result into its own prompt in the mirror.
+ *
+ * [syncEpoch] bumps whenever a special key / paste / arrow is sent (those change
+ * pi's line outside this buffer), so we resync to empty and append from there.
  */
 @Composable
 private fun TtyInputCapture(
     mods: StickyMods,
     focusRequester: FocusRequester,
     onBytes: (String) -> Unit,
+    syncEpoch: Int,
 ) {
-    val base = "        " // 8 spaces — room for a few rapid backspaces per event
-    var field by remember { mutableStateOf(TextFieldValue(base, TextRange(base.length))) }
+    var field by remember { mutableStateOf(TextFieldValue("")) }
+    var sent by remember { mutableStateOf("") }
 
-    // Invisible (1.dp, fully transparent): this field exists only to hold the IME
-    // connection. There is no on-screen input box — the terminal itself is the
-    // input. Tapping the mirror focuses this field (MirrorSurface.onRequestKeyboard),
-    // and pi echoes typed characters into its own prompt inside the mirror.
+    // A special key / paste / history nav changed pi's prompt out from under the
+    // buffer — drop our copy and append fresh from pi's cursor. (epoch 0 is the
+    // initial state; don't clear on first composition.)
+    LaunchedEffect(syncEpoch) {
+        if (syncEpoch > 0) { sent = ""; field = TextFieldValue("") }
+    }
+
     BasicTextField(
         value = field,
         onValueChange = { nv ->
-            val t = nv.text
+            val prev = field.text
+            val cur = nv.text
             when {
-                // Grew from the baseline → the suffix is what was typed.
-                t.length > base.length && t.startsWith(base) -> {
-                    onBytes(TtyKeys.encode(t.substring(base.length), mods.ctrl, mods.alt))
-                    mods.clear()
+                // Enter: flush the line's content, then send CR, then reset.
+                cur.contains('\n') -> {
+                    reconcile(sent, cur.substringBefore('\n'), onBytes)
+                    onBytes(TtyKeys.ENTER)
+                    sent = ""
+                    field = TextFieldValue("")
                 }
-                // Shorter → one or more backspaces ate into the baseline.
-                t.length < base.length -> {
-                    onBytes(TtyKeys.DEL.repeat(base.length - t.length))
-                }
-                // Grew but the IME rewrote the buffer (composing/replace);
-                // best-effort: treat the extra tail as typed input.
-                t.length > base.length -> {
-                    onBytes(TtyKeys.encode(t.takeLast(t.length - base.length), mods.ctrl, mods.alt))
+                // Sticky Ctrl/Alt armed + a clean single append → treat it as a
+                // control chord and keep it OUT of the buffer (Ctrl+letter, etc.).
+                (mods.ctrl || mods.alt) && cur.length > prev.length && cur.startsWith(prev) -> {
+                    onBytes(TtyKeys.encode(cur.substring(prev.length), mods.ctrl, mods.alt))
                     mods.clear()
+                    field = TextFieldValue(prev, TextRange(prev.length)) // revert
+                }
+                // Normal typing / autocorrect: reconcile buffer → pi.
+                else -> {
+                    reconcile(sent, cur, onBytes)
+                    sent = cur
+                    field = nv
                 }
             }
-            // Always snap back to the baseline with the cursor at the end.
-            field = TextFieldValue(base, TextRange(base.length))
         },
         modifier = Modifier
             .size(1.dp)
@@ -276,13 +307,12 @@ private fun TtyInputCapture(
             .focusRequester(focusRequester),
         textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
         cursorBrush = SolidColor(Color.Transparent),
-        // No autocorrect/suggestions/capitalization: composing text would
-        // corrupt the diff. ImeAction.None keeps Enter as a newline ('\n'),
-        // which encode() turns into CR.
+        // Autocorrect + suggestions + auto-caps ON: the buffer holds a real line so
+        // the IME can compose, and reconcile() pushes any rewrite to pi.
         keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.None,
-            autoCorrectEnabled = false,
-            keyboardType = KeyboardType.Ascii,
+            capitalization = KeyboardCapitalization.Sentences,
+            autoCorrectEnabled = true,
+            keyboardType = KeyboardType.Text,
             imeAction = ImeAction.None,
         ),
         singleLine = false,
