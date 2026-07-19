@@ -172,7 +172,13 @@ fun TtyKeyboardBar(vm: ChatViewModel, agentId: String, focusRequester: FocusRequ
                 if (!pasted.isNullOrEmpty()) sendExternal(TtyKeys.bracketedPaste(pasted))
             },
         )
-        TtyInputCapture(mods = mods, focusRequester = focusRequester, onBytes = send, syncEpoch = syncEpoch)
+        TtyInputCapture(
+            mods = mods,
+            focusRequester = focusRequester,
+            onBytes = send,
+            onChordBytes = sendExternal,
+            syncEpoch = syncEpoch,
+        )
     }
 }
 
@@ -244,33 +250,52 @@ private fun reconcile(old: String, new: String, onBytes: (String) -> Unit) {
     if (p < new.length) onBytes(new.substring(p))
 }
 
+/** Sacrificial prefix kept at the start of the capture field: backspacing at a
+ *  logically-empty line still shrinks the field (eating into the prefix), so the
+ *  deletion is observable and can be forwarded as DEL bytes — pasted or
+ *  pre-existing prompt text stays deletable. 8 spaces — room for a few rapid
+ *  backspaces per event; re-padded after each one. */
+private const val BASE = "        "
+
+private fun baseField() = TextFieldValue(BASE, TextRange(BASE.length))
+
+/** The user-typed text in the capture field: everything after the sacrificial
+ *  prefix ("" when backspaces have eaten into the prefix itself). */
+private fun logicalText(fieldText: String): String =
+    if (fieldText.length >= BASE.length) fieldText.substring(BASE.length) else ""
+
 /**
  * Invisible keystroke capture with a reconciling buffer. The [BasicTextField]
- * holds a real, editable copy of the line you're typing — so the IME keeps a
- * live composing word and **autocorrect / suggestions work**. On every change we
- * [reconcile] the buffer against [sent] (what pi's prompt already shows): we send
- * backspaces for the changed tail, then the corrected text. So when autocorrect
- * rewrites "teh " → "the ", pi gets DEL×3 + "he ". The field is invisible; pi
- * echoes the result into its own prompt in the mirror.
+ * holds [BASE] plus a real, editable copy of the line you're typing — so the IME
+ * keeps a live composing word and **autocorrect / suggestions work**. On every
+ * change we [reconcile] the text after the prefix against [sent] (what pi's
+ * prompt already shows): we send backspaces for the changed tail, then the
+ * corrected text. So when autocorrect rewrites "teh " → "the ", pi gets DEL×3 +
+ * "he ". The field is invisible; pi echoes the result into its own prompt in the
+ * mirror.
  *
  * [syncEpoch] bumps whenever a special key / paste / arrow is sent (those change
- * pi's line outside this buffer), so we resync to empty and append from there.
+ * pi's line outside this buffer), so we resync to just the prefix and append
+ * from pi's cursor. Sticky Ctrl/Alt chords go out via [onChordBytes] — the
+ * epoch-bumping send — because a chord (^W, ^U, ^A…) changes pi's line in ways
+ * the buffer cannot model, so it must trigger the same resync.
  */
 @Composable
 private fun TtyInputCapture(
     mods: StickyMods,
     focusRequester: FocusRequester,
     onBytes: (String) -> Unit,
+    onChordBytes: (String) -> Unit,
     syncEpoch: Int,
 ) {
-    var field by remember { mutableStateOf(TextFieldValue("")) }
+    var field by remember { mutableStateOf(baseField()) }
     var sent by remember { mutableStateOf("") }
 
-    // A special key / paste / history nav changed pi's prompt out from under the
-    // buffer — drop our copy and append fresh from pi's cursor. (epoch 0 is the
-    // initial state; don't clear on first composition.)
+    // A special key / paste / chord / history nav changed pi's prompt out from
+    // under the buffer — drop our copy and append fresh from pi's cursor.
+    // (epoch 0 is the initial state; don't clear on first composition.)
     LaunchedEffect(syncEpoch) {
-        if (syncEpoch > 0) { sent = ""; field = TextFieldValue("") }
+        if (syncEpoch > 0) { sent = ""; field = baseField() }
     }
 
     BasicTextField(
@@ -279,27 +304,43 @@ private fun TtyInputCapture(
             val prev = field.text
             val cur = nv.text
             when {
-                // Enter: flush the line's content, then send CR, then reset.
+                // Enter: flush the first line, send CR, then push any remaining
+                // committed lines (encode maps '\n' → CR) and reset. Multi-line
+                // text arrives via commitText from clipboard chips, dictation,
+                // and autofill — none of which go through the Paste button.
                 cur.contains('\n') -> {
-                    reconcile(sent, cur.substringBefore('\n'), onBytes)
+                    reconcile(sent, logicalText(cur.substringBefore('\n')), onBytes)
                     onBytes(TtyKeys.ENTER)
+                    val rest = cur.substringAfter('\n')
+                    if (rest.isNotEmpty()) onBytes(TtyKeys.encode(rest, ctrl = false, alt = false))
                     sent = ""
-                    field = TextFieldValue("")
+                    field = baseField()
                 }
-                // Sticky Ctrl/Alt armed + a clean single append → treat it as a
-                // control chord and keep it OUT of the buffer (Ctrl+letter, etc.).
-                (mods.ctrl || mods.alt) && cur.length > prev.length && cur.startsWith(prev) -> {
-                    onBytes(TtyKeys.encode(cur.substring(prev.length), mods.ctrl, mods.alt))
-                    mods.clear()
-                    field = TextFieldValue(prev, TextRange(prev.length)) // revert
+                // Sticky Ctrl/Alt armed + buffer growth → chord the appended
+                // character(s) best-effort and keep them OUT of the buffer. The
+                // chord goes out on the epoch-bumping path so the buffer resets
+                // and the mirror resyncs (pi's line just changed under us).
+                (mods.ctrl || mods.alt) && cur.length > prev.length -> {
+                    onChordBytes(TtyKeys.encode(cur.takeLast(cur.length - prev.length), mods.ctrl, mods.alt))
+                    sent = ""
+                    field = baseField()
                 }
-                // Normal typing / autocorrect: reconcile buffer → pi.
+                // Normal typing / autocorrect: reconcile the post-prefix text →
+                // pi; deletions that ate into the sacrificial prefix are
+                // backspaces past logical-empty, forwarded as DELs, then the
+                // prefix is re-padded.
                 else -> {
-                    reconcile(sent, cur, onBytes)
-                    sent = cur
-                    field = nv
+                    val logicalCur = logicalText(cur)
+                    reconcile(sent, logicalCur, onBytes)
+                    val eaten = BASE.length - cur.length
+                    if (eaten > 0) onBytes(TtyKeys.DEL.repeat(eaten))
+                    sent = logicalCur
+                    field = if (cur.startsWith(BASE)) nv
+                    else TextFieldValue(BASE + logicalCur, TextRange(BASE.length + logicalCur.length))
                 }
             }
+            // An armed modifier never survives a keystroke, whatever the IME did.
+            mods.clear()
         },
         modifier = Modifier
             .size(1.dp)
@@ -307,10 +348,11 @@ private fun TtyInputCapture(
             .focusRequester(focusRequester),
         textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
         cursorBrush = SolidColor(Color.Transparent),
-        // Autocorrect + suggestions + auto-caps ON: the buffer holds a real line so
-        // the IME can compose, and reconcile() pushes any rewrite to pi.
+        // Autocorrect + suggestions ON: the buffer holds a real line so the IME
+        // can compose, and reconcile() pushes any rewrite to pi. Auto-caps OFF:
+        // a shell prompt is not a sentence — `ls` must not become `Ls`.
         keyboardOptions = KeyboardOptions(
-            capitalization = KeyboardCapitalization.Sentences,
+            capitalization = KeyboardCapitalization.None,
             autoCorrectEnabled = true,
             keyboardType = KeyboardType.Text,
             imeAction = ImeAction.None,
