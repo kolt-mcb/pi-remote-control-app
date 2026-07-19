@@ -6,6 +6,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -163,6 +164,16 @@ class PiWebSocket : WebSocketListener() {
     val commandListFlow: StateFlow<List<RemoteCommand>> get() = _commands
     private val _savedSessions = MutableStateFlow<List<SavedSession>>(emptyList())
     val savedSessionsFlow: StateFlow<List<SavedSession>> get() = _savedSessions
+    // Host directory browser: response and error states
+    private val _hostDirs = MutableStateFlow<HostDirsResponse?>(null)
+    val hostDirsFlow: StateFlow<HostDirsResponse?> get() = _hostDirs
+    private val _hostDirsError = MutableStateFlow<String?>(null)
+    val hostDirsErrorFlow: StateFlow<String?> get() = _hostDirsError
+    // Host directory browser: mkdir operation results
+    private val _mkdirId = MutableStateFlow<Long>(0)
+    val mkdirIdFlow: StateFlow<Long> get() = _mkdirId
+    private val _mkdirResult = MutableSharedFlow<MkdirResult>(extraBufferCapacity = 1)
+    val mkdirResultFlow: Flow<MkdirResult> get() = _mkdirResult
     // Fires when the host replaces the self session (/new, /resume). The
     // ViewModel wipes the persisted DB history so a later reconnect can't
     // re-inject the old conversation over the now-empty session.
@@ -201,6 +212,11 @@ class PiWebSocket : WebSocketListener() {
     // single OkHttp reader thread (dispatch), so no synchronization needed.
     private var mirrorBuf: MutableList<String> = mutableListOf()
     private var mirrorBufAgent: String = ""
+    // PiPerf: nanoTime of the last keystroke sent to the host. On the next mirror
+    // frame we log the gap (echo round-trip = network + host compose), then clear it.
+    // Touched from the IME (send) and the reader thread (frame) — volatile is enough
+    // for a single timestamp read/write.
+    @Volatile private var lastInputSentNanos = 0L
     // Files pushed by the host (piRemote.sendFile) awaiting a save/share decision
     private val _fileDownload = MutableStateFlow<FileDownload?>(null)
     val fileDownloadFlow: StateFlow<FileDownload?> get() = _fileDownload
@@ -330,9 +346,34 @@ class PiWebSocket : WebSocketListener() {
      *  If [sessionPath] is non-blank, the new pi is invoked with
      *  `--session <path>` to resume that saved session — this is how the
      *  saved-session browser surfaces a "tap to resume" action. */
-    fun sendSpawnPeer(sessionPath: String = "") {
-        val sp = if (sessionPath.isNotBlank()) ",\"sessionPath\":\"${Js.e(sessionPath)}\"" else ""
-        sock?.send("{\"type\":\"spawn_peer\"$sp}")
+    /** Spawn a second pi process on the host with an optional working directory.
+     *  [sessionPath] resumes a saved session. [cwd] sets the starting directory.
+     *  Reply is type=extension_ui_request with the notify banner. */
+    fun sendSpawnPeer(sessionPath: String = "", cwd: String = "") {
+        val parts = mutableListOf<String>()
+        if (sessionPath.isNotBlank()) parts.add("\"sessionPath\":\"${Js.e(sessionPath)}\"")
+        if (cwd.isNotBlank()) parts.add("\"cwd\":\"${Js.e(cwd)}\"")
+        val fields = if (parts.isEmpty()) "" else ",${parts.joinToString(",")}"
+        sock?.send("{\"type\":\"spawn_peer\"$fields}")
+    }
+
+    /** Ask the host for a directory listing. Reply arrives as type=host_dirs;
+     *  errors arrive as type=host_dirs_error. */
+    fun sendListHostDirs(basePath: String = "") {
+        sock?.send(if (basePath.isNotBlank())
+            "{\"type\":\"list_host_dirs\",\"base\":\"${Js.e(basePath)}\"}"
+        else
+            "{\"type\":\"list_host_dirs\"}"
+        )
+    }
+
+    /** Ask the host to create a directory [name] under [dirPath].
+     *  Increments [mkdirIdFlow] so callers can correlate the async result.
+     *  Reply arrives as type=mkdir or type=mkdir_error. */
+    fun sendCreateDir(dirPath: String, name: String, id: Long) {
+        _mkdirId.value = id
+        val json = "{\"type\":\"create_dir\",\"id\":$id,\"path\":\"${Js.e(dirPath)}\",\"name\":\"${Js.e(name)}\"}"
+        sock?.send(json)
     }
 
     /** Ask the host for its list of saved pi sessions. Reply arrives as
@@ -355,6 +396,7 @@ class PiWebSocket : WebSocketListener() {
     private fun flushViewport() {
         val c = desiredCols
         if (c <= 0 || c == lastReportedCols) return
+        if (Log.isLoggable("PiPerf", Log.DEBUG)) Log.d("PiPerf", "viewport_send cols=$c (was $lastReportedCols)")
         if (sock?.send("{\"type\":\"viewport\",\"cols\":$c}") == true) lastReportedCols = c
     }
     // UI protocol: send response for extension_ui_request dialogs
@@ -431,8 +473,21 @@ class PiWebSocket : WebSocketListener() {
     }
     /** Raw input for the mirrored TUI: keys and SGR-encoded taps (ESC sequences included). */
     fun sendMirrorInput(data: String, agentId: String = "") {
+        lastInputSentNanos = System.nanoTime()   // PiPerf: start the echo-RTT clock
         val target = if (agentId.isNotBlank()) ",\"agentId\":\"${Js.e(agentId)}\"" else ""
         sock?.send("{\"type\":\"mirror_input\",\"data\":\"${Js.e(data)}\"$target}")
+    }
+
+    /** PiPerf: log keystroke→frame latency (network + host compose) and clear the
+     *  clock. [changed] is the number of rows this frame touched (full size for a
+     *  keyframe, diff row count for a diff) — a heavy frame is its own signal. */
+    private fun logEchoRtt(lineCount: Int, changed: Int) {
+        val t = lastInputSentNanos
+        if (t == 0L) return
+        lastInputSentNanos = 0L
+        if (!Log.isLoggable("PiPerf", Log.DEBUG)) return
+        val ms = (System.nanoTime() - t) / 1_000_000.0
+        Log.d("PiPerf", "echo_rtt=%.1fms lines=%d changed=%d".format(ms, lineCount, changed))
     }
 
     override fun onOpen(ws: WebSocket, r: okhttp3.Response) {
@@ -599,6 +654,10 @@ class PiWebSocket : WebSocketListener() {
             "session_list" -> handleSessions(j)
             "saved_sessions" -> handleSavedSessions(j)
             "command_list" -> handleCommands(j)
+            "host_dirs" -> handleHostDirs(j)
+            "host_dirs_error" -> { _hostDirs.value = null; _hostDirsError.value = Js.gets(j, "message") ?: "unknown error" }
+            "mkdir" -> handleMkdir(j)
+            "mkdir_error" -> handleMkdirError(j)
             "connected" -> {
                 val count = (j["clients"] as? Number)?.toInt() ?: 0
                 _clientCount.value = count
@@ -638,6 +697,7 @@ class PiWebSocket : WebSocketListener() {
                 val agentId = Js.gets(j, "agentId") ?: ""
                 mirrorBuf = lines.toMutableList()
                 mirrorBufAgent = agentId
+                logEchoRtt(lines.size, lines.size)
                 _mirrorFrame.value = MirrorFrame(
                     seq = (j["seq"] as? Number)?.toInt() ?: 0,
                     agentId = agentId,
@@ -646,6 +706,7 @@ class PiWebSocket : WebSocketListener() {
                     cursorCol = (cur?.get("col") as? Number)?.toInt() ?: -1,
                     width = (j["width"] as? Number)?.toInt() ?: 80,
                     height = (j["height"] as? Number)?.toInt() ?: 24,
+                    recvNanos = System.nanoTime(),
                 )
             }
             // Row-level mirror diff: only the changed rows, applied over the buffer
@@ -662,6 +723,7 @@ class PiWebSocket : WebSocketListener() {
                     } ?: emptyList()
                     com.piremote.tty.applyMirrorDiff(mirrorBuf, lineCount, rows)
                     val cur = j["cursor"] as? Map<*, *>
+                    logEchoRtt(mirrorBuf.size, rows.size)
                     _mirrorFrame.value = MirrorFrame(
                         seq = (j["seq"] as? Number)?.toInt() ?: 0,
                         agentId = agentId,
@@ -670,6 +732,7 @@ class PiWebSocket : WebSocketListener() {
                         cursorCol = (cur?.get("col") as? Number)?.toInt() ?: -1,
                         width = (j["width"] as? Number)?.toInt() ?: 80,
                         height = (j["height"] as? Number)?.toInt() ?: 24,
+                        recvNanos = System.nanoTime(),
                     )
                 }
             }
@@ -1260,6 +1323,34 @@ class PiWebSocket : WebSocketListener() {
         }
     }
 
+    private fun handleHostDirs(j: Map<*, *>) {
+        val arr = j["dirs"] as? List<*> ?: return
+        val path = Js.gets(j, "path") ?: ""
+        val dirs = arr.mapNotNull { d ->
+            if (d !is Map<*, *>) return@mapNotNull null
+            HostDir(
+                name = (d["name"] as? String) ?: "",
+                path = (d["path"] as? String) ?: ""
+            )
+        }
+        _hostDirs.value = HostDirsResponse(dirs, path)
+        _hostDirsError.value = null
+    }
+
+    private fun handleMkdir(j: Map<*, *>) {
+        val id = Js.gets(j, "id")?.toLongOrNull() ?: return
+        val path = Js.gets(j, "path") ?: ""
+        val name = Js.gets(j, "name") ?: ""
+        _mkdirResult.tryEmit(MkdirResult(id, path, name, true))
+    }
+
+    private fun handleMkdirError(j: Map<*, *>) {
+        val id = Js.gets(j, "id")?.toLongOrNull() ?: return
+        val path = Js.gets(j, "path") ?: ""
+        val name = Js.gets(j, "name") ?: ""
+        _mkdirResult.tryEmit(MkdirResult(id, path, name, false, Js.gets(j, "message") ?: "unknown error"))
+    }
+
     private fun handleExtensionUI(j: Map<*, *>) {
         val method = Js.gets(j, "method") ?: return
         val id = Js.gets(j, "id") ?: return
@@ -1436,6 +1527,28 @@ data class ExtensionUIRequest(
     val prefill: String? = null
 )
 
+// ── Host directory browser ──
+
+data class HostDir(
+    val name: String,
+    val path: String
+)
+
+/** Response from the host's directory listing: the directories found under a path. */
+data class HostDirsResponse(
+    val dirs: List<HostDir>,
+    val basePath: String
+)
+
+/** Result of a mkdir operation — one-shot, identified by the caller-supplied id. */
+data class MkdirResult(
+    val id: Long,
+    val path: String,
+    val name: String,
+    val success: Boolean,
+    val errorMessage: String? = null
+)
+
 // ── Session model ──
 
 data class RemoteCommand(
@@ -1486,6 +1599,9 @@ data class MirrorFrame(
     val cursorCol: Int,
     val width: Int,              // host terminal columns
     val height: Int,             // host terminal rows (viewport = bottom rows)
+    // PiPerf: nanoTime when this frame was decoded off the socket. Used to measure
+    // received→rendered (UI commit) latency on the main thread. 0 = not stamped.
+    val recvNanos: Long = 0L,
 )
 
 /** A file pushed from the host, awaiting a user save/share decision. */

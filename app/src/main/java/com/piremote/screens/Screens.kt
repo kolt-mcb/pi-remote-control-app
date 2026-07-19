@@ -1264,6 +1264,145 @@ fun PiStartupHeader() {
     }
 }
 
+/** Opaque token — increment to reset folder picker state (used after mkdir success). */
+data class DirRefresh(val token: Long)
+
+/** Folder picker dialog — browse host directories and optionally create new ones.
+ *  [dirs] is null until the first listing arrives (loading); an empty list means
+ *  the directory has no subdirectories. */
+@Composable
+fun FolderPickerDialog(
+    dirs: List<HostDir>?,
+    currentDir: String,
+    onNavigate: (String) -> Unit,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onCreateFolder: (dirPath: String, name: String) -> Unit = { _, _ -> },
+    creating: Boolean = false,
+    createError: String? = null,
+    dirRefresh: DirRefresh = DirRefresh(0)
+) {
+    // Input clears when parent increments dirRefresh.token (e.g. after mkdir success)
+    var folderName by remember(dirRefresh) { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = { onDismiss() },
+        title = {
+            Column {
+                Text("Select working directory", fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(2.dp))
+                Text(currentDir, color = textMuted, fontFamily = piMono, fontSize = 9.sp, maxLines = 1)
+            }
+        },
+        text = {
+            Column {
+                // ── New folder controls ────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            val name = folderName.trim()
+                            if (name.isNotBlank() && !creating) onCreateFolder(currentDir, name)
+                        },
+                        enabled = folderName.isNotBlank() && !creating,
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = bg.copy(alpha = 0.3f),
+                            contentColor = accent
+                        ),
+                        modifier = Modifier.width(80.dp)
+                    ) {
+                        Text(if (creating) "•••" else "+", fontFamily = piMono, fontSize = 10.sp)
+                    }
+                    TextField(
+                        value = folderName,
+                        onValueChange = { folderName = it },
+                        placeholder = { Text("Folder name", color = textMuted, fontFamily = piMono, fontSize = 9.sp) },
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        singleLine = true,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = bg, unfocusedContainerColor = bg,
+                            focusedIndicatorColor = accent, unfocusedIndicatorColor = border,
+                            focusedTextColor = textPrimary, unfocusedTextColor = textPrimary
+                        ),
+                        textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 9.sp),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(onDone = {
+                            val name = folderName.trim()
+                            if (name.isNotBlank() && !creating) onCreateFolder(currentDir, name)
+                        })
+                    )
+                }
+                createError?.let { err ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(err, color = error, fontFamily = piMono, fontSize = 9.sp)
+                }
+                Spacer(Modifier.height(6.dp))
+                // ── Directory listing ──────────────────────────
+                if (dirs == null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Loading…", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 400.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        if (currentDir != "/") {
+                            item {
+                                PiBox(borderColor = borderMuted) {
+                                    Row(
+                                        Modifier.fillMaxWidth().clickable {
+                                            val parent = currentDir.substringBeforeLast("/").takeIf { it.isNotBlank() } ?: "/"
+                                            onNavigate(parent)
+                                        }.padding(horizontal = 6.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text("↑", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
+                                        Text("  .. (parent)", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                        }
+                        if (dirs.isEmpty()) {
+                            item {
+                                Text(
+                                    "No subfolders", color = textMuted, fontFamily = piMono, fontSize = 10.sp,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                        items(dirs, key = { it.path }) { dir ->
+                            PiBox(header = dir.name, borderColor = borderMuted) {
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { onSelect(dir.path) }
+                                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("▸ ", color = accent, fontFamily = piMono, fontSize = 11.sp)
+                                    Column {
+                                        Text(dir.path, color = textSecondary, fontFamily = piMono, fontSize = 10.sp, maxLines = 1)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = { onDismiss() }) {
+                Text("Cancel", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
+            }
+        }
+    )
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 /**

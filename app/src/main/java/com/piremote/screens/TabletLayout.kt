@@ -67,6 +67,27 @@ fun TabletLayout(
     // Collect remaining flows
     val inp by st.inputText.collectAsState()
 
+    // Folder picker state (single source of truth — the sidebar only renders it)
+    var showFolderPicker by remember { mutableStateOf(false) }
+    var dirCreating by remember { mutableStateOf(false) }
+    var dirCreateError by remember { mutableStateOf<String?>(null) }
+    var mkdirRefreshToken by remember { mutableStateOf(0L) }
+    val dirsResp by st.hostDirs.collectAsState()
+
+    // On mkdir result: refresh the current listing on success, surface the error on failure
+    LaunchedEffect(st.mkdirResult) {
+        st.mkdirResult.collect { r ->
+            dirCreating = false
+            if (r.success) {
+                dirCreateError = null
+                mkdirRefreshToken++
+                vm.browseHostDirs(dirsResp?.basePath ?: "")
+            } else {
+                dirCreateError = r.errorMessage ?: "Could not create folder"
+            }
+        }
+    }
+
     Row(modifier = Modifier.fillMaxSize()) {
         // ── Left: Session Sidebar ────────────────────────────────
         TabletSidebar(
@@ -83,6 +104,32 @@ fun TabletLayout(
             onDisconnect = { vm.disconnect() },
             onCloseSession = vm::closeSession,
             onSavedSessionTap = { path -> vm.spawnPeerWithSession(path) },
+            onBrowseFolders = {
+                showFolderPicker = true
+                dirCreating = false
+                dirCreateError = null
+                vm.browseHostDirs("")
+            },
+            onDirNavigate = { path ->
+                dirCreateError = null
+                vm.browseHostDirs(path)
+            },
+            onDirSelect = { path ->
+                vm.spawnPeer(path)
+                showFolderPicker = false
+            },
+            onDirCreate = { dirPath, name ->
+                dirCreating = true
+                dirCreateError = null
+                vm.createFolder(dirPath, name)
+            },
+            onDirDismiss = { showFolderPicker = false },
+            showFolderPicker = showFolderPicker,
+            dirBasePath = dirsResp?.basePath ?: "",
+            dirListing = dirsResp?.dirs,
+            dirCreating = dirCreating,
+            dirCreateError = dirCreateError,
+            mkdirRefreshToken = mkdirRefreshToken,
             modifier = Modifier
                 .width(300.dp)
                 .fillMaxHeight()
@@ -146,12 +193,38 @@ fun TabletSidebar(
     onDisconnect: () -> Unit,
     onCloseSession: (String) -> Unit,
     onSavedSessionTap: (String) -> Unit,
+    onBrowseFolders: () -> Unit = {},
+    onDirNavigate: (String) -> Unit = {},
+    onDirSelect: (String) -> Unit = {},
+    onDirCreate: (String, String) -> Unit = { _, _ -> },
+    onDirDismiss: () -> Unit = {},
+    showFolderPicker: Boolean = false,
+    dirBasePath: String = "",
+    dirListing: List<HostDir>? = null,
+    dirCreating: Boolean = false,
+    dirCreateError: String? = null,
+    mkdirRefreshToken: Long = 0,
     modifier: Modifier = Modifier,
 ) {
     var selectedCategory by remember { mutableStateOf("all") }
     val filteredSessions = if (selectedCategory == "all") savedSessions else savedSessions.filter { it.status == selectedCategory }
     val counts = savedSessions.groupingBy { it.status }.eachCount()
     val totalCount = savedSessions.size
+
+    // Dialog lives outside the LazyColumn so it composes regardless of scroll position
+    if (showFolderPicker) {
+        FolderPickerDialog(
+            dirs = dirListing,
+            currentDir = dirBasePath,
+            onNavigate = onDirNavigate,
+            onSelect = onDirSelect,
+            onDismiss = onDirDismiss,
+            onCreateFolder = onDirCreate,
+            creating = dirCreating,
+            createError = dirCreateError,
+            dirRefresh = DirRefresh(mkdirRefreshToken)
+        )
+    }
 
     LazyColumn(
         modifier = modifier,
@@ -195,17 +268,27 @@ fun TabletSidebar(
         item {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.spacedBy(3.dp, alignment = Alignment.End),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Active sessions", color = textSecondary, fontFamily = piMono, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                Box(
-                    modifier = Modifier
-                        .border(0.5.dp, accent, RoundedCornerShape(0.dp))
-                        .clickable { onNewSession() }
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                ) {
-                    Text("[+ New]", color = accent, fontFamily = piMono, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .border(0.5.dp, textMuted, RoundedCornerShape(0.dp))
+                            .clickable(enabled = sessions.isNotEmpty()) { onBrowseFolders() }
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    ) {
+                        Text("Browse", color = textMuted, fontFamily = piMono, fontSize = 9.sp)
+                    }
+                    Box(
+                        modifier = Modifier
+                            .border(0.5.dp, accent, RoundedCornerShape(0.dp))
+                            .clickable(enabled = sessions.isNotEmpty()) { onNewSession() }
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text("[+ New]", color = accent, fontFamily = piMono, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
         }

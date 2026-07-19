@@ -15,6 +15,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -114,6 +115,11 @@ class ChatUIState(
     val turnSummary: StateFlow<PiWebSocket.TurnSummary?>,
     val savedSessions: StateFlow<List<SavedSession>>,
     val renderFrame: StateFlow<RenderFrame?>,
+    // Host directory browser
+    val hostDirs: StateFlow<HostDirsResponse?>,
+    val hostDirsError: StateFlow<String?>,
+    // Host directory browser: mkdir results
+    val mkdirResult: Flow<MkdirResult>,
 )
 
 class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : ViewModel() {
@@ -164,6 +170,9 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
         turnSummary = _ws.turnSummaryFlow,
         savedSessions = _ws.savedSessionsFlow,
         renderFrame = _ws.renderFrameFlow,
+        mkdirResult = _ws.mkdirResultFlow,
+        hostDirs = _ws.hostDirsFlow,
+        hostDirsError = _ws.hostDirsErrorFlow,
     )
 
     fun setSelectedSession(id: String) {
@@ -390,13 +399,24 @@ class ChatViewModel(private val _ws: PiWebSocket, private val _ctx: Context) : V
      *  extension components to fit the phone. */
     fun reportViewport(cols: Int) { _ws.reportViewport(cols) }
 
-    /** Spawn a new pi peer process on the host. Routes to PiWebSocket.sendSpawnPeer. */
-    fun spawnPeer() { _ws.sendSpawnPeer() }
+    /** Spawn a new pi peer process on the host. Routes to PiWebSocket.sendSpawnPeer.
+     *  If [cwd] is non-blank, the new pi starts in that directory. */
+    fun spawnPeer(cwd: String = "") { _ws.sendSpawnPeer(cwd = cwd) }
 
     /** Spawn a peer resuming a specific saved session — equivalent to
      *  `pi --session <path>` on the host. The new pi joins the host as a
      *  peer; the app shows it as a new tab pre-loaded with that history. */
-    fun spawnPeerWithSession(path: String) { _ws.sendSpawnPeer(path) }
+    fun spawnPeerWithSession(path: String, cwd: String = "") { _ws.sendSpawnPeer(path, cwd) }
+
+    /** Request the host's directory listing for the folder picker. Response
+     *  arrives in [st.hostDirs] / [st.hostDirsError]. */
+    fun browseHostDirs(basePath: String = "") { _ws.sendListHostDirs(basePath) }
+
+    /** Create a directory on the host under [dirPath] named [name].
+     *  Result arrives on [st.mkdirResult]. */
+    fun createFolder(dirPath: String, name: String) {
+        _ws.sendCreateDir(dirPath, name, System.nanoTime())
+    }
 
     /** Refresh the saved-session list. The browser screen calls this on
      *  entry; the response shows up in [PiWebSocket.savedSessionsFlow]. */
