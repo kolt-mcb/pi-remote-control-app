@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -408,23 +409,32 @@ fun SessionsScreen(
     val counts = savedSessions.groupingBy { it.status }.eachCount()
     val totalCount = savedSessions.size
     
+    // One LazyColumn for the whole screen. The previous nested-list layout
+    // (bounded active list + bounded saved list + weighted spacers) measured
+    // the unweighted Saved box first, so a full saved list starved the active
+    // list down to one clipped card while the screen showed dead space.
     Box(modifier = Modifier.fillMaxSize().background(bg)) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+            contentPadding = PaddingValues(bottom = 12.dp),
+        ) {
             // Header
-            PiBox(header = "Sessions", borderColor = accent) {
-                Column(modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp)) {
-                    Text(
-                        "Active Sessions — Tap to switch", color = accent,
-                        fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "${sessions.size} agent${if (sessions.size != 1) "s" else ""} connected  •  ${clientCount} viewer${if (clientCount != 1) "s" else ""}",
-                        color = textMuted, fontFamily = piMono, fontSize = 11.sp
-                    )
+            item(key = "header") {
+                PiBox(header = "Sessions", borderColor = accent) {
+                    Column(modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp)) {
+                        Text(
+                            "Active Sessions — Tap to switch", color = accent,
+                            fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "${sessions.size} agent${if (sessions.size != 1) "s" else ""} connected  •  ${clientCount} viewer${if (clientCount != 1) "s" else ""}",
+                            color = textMuted, fontFamily = piMono, fontSize = 11.sp
+                        )
+                    }
                 }
             }
-            Spacer(Modifier.height(8.dp))
 
             // [+ New session] — spawns a separate pi process on the host
             // (peer mode) instead of calling /new on the current pi. The old
@@ -434,115 +444,112 @@ fun SessionsScreen(
             // process sidesteps that entirely: each pi has its own
             // extension lifecycle, and the new one joins this host as a
             // peer agent → shows up as a separate tab.
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
-                horizontalArrangement = Arrangement.End
-            ) {
-                Box(
-                    modifier = Modifier
-                        .minimumInteractiveComponentSize()
-                        .border(0.5.dp, accent, RoundedCornerShape(0.dp))
-                        .clickable(enabled = sessions.isNotEmpty(), role = Role.Button, onClickLabel = "start new session") {
-                            vm.spawnPeer()
-                            // Don't navigate to chat yet — the peer takes a
-                            // moment to boot and join. The notify banner
-                            // ("Launching a new pi peer…") will appear; the
-                            // user can stay on the Sessions screen to watch
-                            // the new tab appear in the pill row.
-                        }
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
+            item(key = "new-session") {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    Text(
-                        "[+ New session]",
-                        color = if (sessions.isNotEmpty()) accent else textMuted,
-                        fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium
-                    )
+                    Box(
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .border(0.5.dp, accent, RoundedCornerShape(0.dp))
+                            .clickable(enabled = sessions.isNotEmpty(), role = Role.Button, onClickLabel = "start new session") {
+                                vm.spawnPeer()
+                                // Don't navigate to chat yet — the peer takes a
+                                // moment to boot and join. The notify banner
+                                // ("Launching a new pi peer…") will appear; the
+                                // user can stay on the Sessions screen to watch
+                                // the new tab appear in the pill row.
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            "[+ New session]",
+                            color = if (sessions.isNotEmpty()) accent else textMuted,
+                            fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
             }
-            Spacer(Modifier.height(8.dp))
 
-            // Session list
+            // Active sessions
             if (sessions.isEmpty()) {
-                PiBox(borderColor = borderMuted) {
-                    Column(modifier = Modifier.padding(vertical = 12.dp, horizontal = 10.dp)) {
-                        Text("No sessions available", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
-                        Spacer(Modifier.height(4.dp))
-                        Text("Sessions will appear when agents connect", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                item(key = "no-sessions") {
+                    PiBox(borderColor = borderMuted) {
+                        Column(modifier = Modifier.padding(vertical = 12.dp, horizontal = 10.dp)) {
+                            Text("No sessions available", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
+                            Spacer(Modifier.height(4.dp))
+                            Text("Sessions will appear when agents connect", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                        }
                     }
                 }
             } else {
-                // Bounded: an unbounded LazyColumn here starves the Saved-sessions
-                // box and nav hints below on a full session list.
-                LazyColumn(
-                    modifier = Modifier.weight(1f, fill = false).heightIn(max = 280.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    contentPadding = PaddingValues(horizontal = 6.dp)
-                ) {
-                    items(sessions, key = { it.id }) { session ->
-                        val isSelected = session.id == selectedSession
-                        val isBusy = session.status == "busy"
+                items(sessions, key = { it.id }) { session ->
+                    val isSelected = session.id == selectedSession
+                    val isBusy = session.status == "busy"
+                    Box(modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)) {
                         SessionCard(vm, session, isSelected, isBusy) { vm.setSelectedSession(session.id); vm.showChatScreen() }
                     }
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
+            item(key = "saved-gap") { Spacer(Modifier.height(8.dp)) }
 
             // ── Saved sessions ────────────────────────────────────────
             // Tap any row to spawn `pi --session <path>` as a peer. The
             // resumed pi joins as a new agent, surfaces as a new tab.
             // (Direct ctx.switchSession can't be used from an extension —
-            // see PR #20 / commit message.)
-            PiBox(header = "Saved sessions", borderColor = borderMuted) {
-                Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                    // ── Category filter tabs (shared with tablet sidebar) ──
-                    SessionCategoryTabs(
-                        selected = selectedCategory,
-                        counts = counts,
-                        totalCount = totalCount,
-                        onSelect = { selectedCategory = it },
-                    )
-                    Spacer(Modifier.height(6.dp))
-
-                    // ── Filtered session list ────────────────────────
-                    if (filteredSessions.isEmpty()) {
-                        Text(
-                            if (totalCount == 0) "No saved sessions yet."
-                            else "No $selectedCategory sessions.",
-                            color = textMuted, fontFamily = piMono, fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
+            // see PR #20 / commit message.) The bordered box is drawn as
+            // separate top/gutter/bottom items so its rows lazy-load inside
+            // the single screen list.
+            item(key = "saved-top") { PiTopBorder("Saved sessions", borderMuted) }
+            item(key = "saved-tabs") {
+                PiGutter(borderMuted) {
+                    Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
+                        SessionCategoryTabs(
+                            selected = selectedCategory,
+                            counts = counts,
+                            totalCount = totalCount,
+                            onSelect = { selectedCategory = it },
                         )
-                    } else {
-                        Text(
-                            "${filteredSessions.size} session${if (filteredSessions.size != 1) "s" else ""} · tap to resume as a new tab",
-                            color = textMuted, fontFamily = piMono, fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        LazyColumn(modifier = Modifier.weight(1f, fill = false).heightIn(max = 320.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                            contentPadding = PaddingValues(horizontal = 4.dp)) {
-                            items(filteredSessions, key = { it.path }) { saved ->
-                                SavedSessionRow(saved) {
-                                    vm.spawnPeerWithSession(saved.path)
-                                }
-                            }
+                        Spacer(Modifier.height(4.dp))
+                        if (filteredSessions.isEmpty()) {
+                            Text(
+                                if (totalCount == 0) "No saved sessions yet."
+                                else "No $selectedCategory sessions.",
+                                color = textMuted, fontFamily = piMono, fontSize = 11.sp,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp)
+                            )
+                        } else {
+                            Text(
+                                "${filteredSessions.size} session${if (filteredSessions.size != 1) "s" else ""} · tap to resume as a new tab",
+                                color = textMuted, fontFamily = piMono, fontSize = 10.sp,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
                         }
                     }
                 }
             }
-
-            Spacer(Modifier.height(12.dp))
-
-            // Nav hint
-            PiBox(borderColor = borderMuted) {
-                Column(modifier = Modifier.padding(vertical = 6.dp, horizontal = 10.dp)) {
-                    Text("▸ Back: disconnect", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
-                    Text("▸ Long-press peer: close session", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+            items(filteredSessions, key = { it.path }) { saved ->
+                PiGutter(borderMuted) {
+                    SavedSessionRow(saved) {
+                        vm.spawnPeerWithSession(saved.path)
+                    }
                 }
             }
+            item(key = "saved-bottom") { PiBottomBorder(borderMuted) }
 
-            Spacer(Modifier.weight(1f))
+            item(key = "hint-gap") { Spacer(Modifier.height(8.dp)) }
+
+            // Nav hint
+            item(key = "nav-hint") {
+                PiBox(borderColor = borderMuted) {
+                    Column(modifier = Modifier.padding(vertical = 6.dp, horizontal = 10.dp)) {
+                        Text("▸ Back: disconnect", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                        Text("▸ Long-press peer: close session", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                    }
+                }
+            }
         }
     }
 }
@@ -733,8 +740,14 @@ fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect:
     }
     
     PiBox(header = "Sessions", borderColor = borderMuted) {
+        // Scrollable: with many sessions the min-48dp tabs overflow the screen;
+        // without scroll the last tab collapsed to a one-column sliver whose
+        // label wrapped vertically and stretched the whole box.
         Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp, vertical = 2.dp),
             horizontalArrangement = Arrangement.spacedBy(2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -756,6 +769,7 @@ fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect:
                             sessionLabel(sess.name, 10),
                             color = if (isSelected) textPrimary else textSecondary,
                             fontFamily = piMono, fontSize = 10.sp,
+                            maxLines = 1, softWrap = false,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                         )
                     }

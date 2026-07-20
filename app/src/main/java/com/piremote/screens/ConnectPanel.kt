@@ -3,7 +3,9 @@ package com.piremote.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -275,8 +277,10 @@ fun SessionCategoryTabs(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Scrollable: four min-48dp tabs with double-digit counts overflow narrow
+    // containers (phone portrait, 300dp tablet sidebar) — scroll, don't clip.
     Row(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -305,8 +309,10 @@ fun SessionCategoryTabs(
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(label, color = color, fontFamily = piMono, fontSize = 10.sp,
+                            maxLines = 1, softWrap = false,
                             fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal)
-                        Text("($count)", color = color, fontFamily = piMono, fontSize = 10.sp)
+                        Text("($count)", color = color, fontFamily = piMono, fontSize = 10.sp,
+                            maxLines = 1, softWrap = false)
                     }
                 }
             }
