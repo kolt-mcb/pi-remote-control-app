@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -37,6 +38,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
@@ -182,8 +186,10 @@ fun TtyKeyboardBar(vm: ChatViewModel, agentId: String, focusRequester: FocusRequ
     }
 }
 
-/** Scrollable row of special keys. Ctrl/Alt arm sticky modifiers (highlighted
- *  while armed); the rest emit their escape sequences immediately. */
+/** Row of special keys: a scrollable region of escape-sequence keys, with
+ *  `paste` and the image picker pinned at the right edge (outside the scroll)
+ *  so they stay visible on narrow phones. Ctrl/Alt arm sticky modifiers
+ *  (highlighted while armed); the rest emit their sequences immediately. */
 @Composable
 private fun ModifierKeyRow(
     mods: StickyMods,
@@ -194,33 +200,55 @@ private fun ModifierKeyRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 4.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        KeyCap("esc") { onBytes(TtyKeys.ESC) }
-        KeyCap("tab") { onBytes(TtyKeys.TAB) }
-        KeyCap("ctrl", active = mods.ctrl) { mods.ctrl = !mods.ctrl }
-        KeyCap("alt", active = mods.alt) { mods.alt = !mods.alt }
-        KeyCap("↑") { onBytes(TtyKeys.UP) }
-        KeyCap("↓") { onBytes(TtyKeys.DOWN) }
-        KeyCap("←") { onBytes(TtyKeys.LEFT) }
-        KeyCap("→") { onBytes(TtyKeys.RIGHT) }
-        KeyCap("^C") { onBytes(TtyKeys.CTRL_C); mods.clear() }
-        KeyCap("^D") { onBytes(TtyKeys.CTRL_D); mods.clear() }
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            KeyCap("esc") { onBytes(TtyKeys.ESC) }
+            KeyCap("tab") { onBytes(TtyKeys.TAB) }
+            KeyCap("ctrl", active = mods.ctrl) { mods.ctrl = !mods.ctrl }
+            KeyCap("alt", active = mods.alt) { mods.alt = !mods.alt }
+            KeyCap("↑") { onBytes(TtyKeys.UP) }
+            KeyCap("↓") { onBytes(TtyKeys.DOWN) }
+            KeyCap("←") { onBytes(TtyKeys.LEFT) }
+            KeyCap("→") { onBytes(TtyKeys.RIGHT) }
+            KeyCap("^C") { onBytes(TtyKeys.CTRL_C); mods.clear() }
+            KeyCap("^D") { onBytes(TtyKeys.CTRL_D); mods.clear() }
+        }
         KeyCap("paste") { onPaste() }
-        KeyCap("📎") { onPickImage() }
+        KeyCap("📎", description = "attach image") { onPickImage() }
     }
 }
 
+/** One keycap. The drawn cap fills a ≥ 44dp-tall hit area (heightIn before
+ *  clickable, so the whole cap is tappable); 4dp rounding is intentional
+ *  keyboard chrome. [description] doubles as contentDescription + click label
+ *  for caps whose glyph isn't self-describing (e.g. 📎). */
 @Composable
-private fun KeyCap(label: String, active: Boolean = false, onClick: () -> Unit) {
+private fun KeyCap(
+    label: String,
+    active: Boolean = false,
+    description: String? = null,
+    onClick: () -> Unit,
+) {
     Box(
         modifier = Modifier
+            .heightIn(min = 44.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(if (active) accent else bgSecondary)
-            .clickable { onClick() }
+            .clickable(role = Role.Button, onClickLabel = description) { onClick() }
+            .then(
+                if (description != null) {
+                    Modifier.semantics { contentDescription = description }
+                } else Modifier
+            )
             .padding(horizontal = 11.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
     ) {

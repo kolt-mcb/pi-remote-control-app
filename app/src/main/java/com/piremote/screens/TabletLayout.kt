@@ -14,14 +14,14 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.piremote.test.TestState
@@ -36,22 +36,14 @@ import com.piremote.theme.*
 fun TabletLayout(
     vm: ChatViewModel,
     st: ChatUIState,
-    url: String,
-    input: String,
-    messages: List<ChatMessage>,
-    assist: String,
     status: ConnectionStatus,
     busy: Boolean,
     sessions: List<RemoteSession>,
     selectedSession: String,
-    commands: List<RemoteCommand>,
-    statuses: Map<String, String>,
-    widgets: Map<String, List<String>>,
     compacting: Boolean,
     notifyBanners: List<BannerMessage>,
     uiTitle: String?,
     clientCount: Int,
-    turnSummary: PiWebSocket.TurnSummary?,
     savedSessions: List<SavedSession>,
     renderFrame: RenderFrame?,
 ) {
@@ -63,9 +55,6 @@ fun TabletLayout(
     fun uiRespond(id: String, value: String) = TestState.ws.sendUIResponse(id, value = value)
     fun uiCancelled(id: String) = TestState.ws.sendUIResponse(id, cancelled = true)
     fun renderInput(id: String, value: String) = TestState.ws.sendInput(id, value)
-
-    // Collect remaining flows
-    val inp by st.inputText.collectAsState()
 
     // Folder picker state (single source of truth — the sidebar only renders it)
     var showFolderPicker by remember { mutableStateOf(false) }
@@ -144,22 +133,13 @@ fun TabletLayout(
         Box(modifier = Modifier.weight(1f).fillMaxSize()) {
             ChatScreen(
                 vm = vm,
-                url = url,
-                input = input,
-                messages = messages,
-                assist = assist,
                 status = status,
                 busy = busy,
                 sessions = sessions,
                 selectedSession = selectedSession,
-                commands = commands,
-                statuses = statuses,
-                widgets = widgets,
-                compacting = compacting,
                 notifyBanners = notifyBanners,
                 uiTitle = uiTitle,
                 clientCount = clientCount,
-                turnSummary = turnSummary,
                 showSessionSelector = false,
             )
 
@@ -246,18 +226,24 @@ fun TabletSidebar(
                         Spacer(Modifier.weight(1f))
                         Box(
                             modifier = Modifier
-                                .border(1.dp, error, RoundedCornerShape(0.dp))
-                                .clickable { onDisconnect() }
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                                .minimumInteractiveComponentSize()
+                                .clickable(role = Role.Button, onClickLabel = "disconnect") { onDisconnect() },
+                            contentAlignment = Alignment.Center,
                         ) {
-                            Text("[Disconnect]", color = error, fontFamily = piMono, fontSize = 9.sp)
+                            Box(
+                                modifier = Modifier
+                                    .border(1.dp, error, RoundedCornerShape(0.dp))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Text("[Disconnect]", color = error, fontFamily = piMono, fontSize = 10.sp)
+                            }
                         }
                     }
                     if (sessions.isNotEmpty()) {
                         Spacer(Modifier.height(4.dp))
                         Text(
                             "${sessions.size} agent${if (sessions.size != 1) "s" else ""} connected  •  ${clientCount} viewer${if (clientCount != 1) "s" else ""}",
-                            color = textMuted, fontFamily = piMono, fontSize = 9.sp,
+                            color = textMuted, fontFamily = piMono, fontSize = 10.sp,
                         )
                     }
                 }
@@ -275,19 +261,39 @@ fun TabletSidebar(
                 Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                     Box(
                         modifier = Modifier
-                            .border(0.5.dp, textMuted, RoundedCornerShape(0.dp))
-                            .clickable(enabled = sessions.isNotEmpty()) { onBrowseFolders() }
-                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                            .minimumInteractiveComponentSize()
+                            .clickable(
+                                enabled = sessions.isNotEmpty(),
+                                role = Role.Button,
+                                onClickLabel = "browse host folders",
+                            ) { onBrowseFolders() },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Text("Browse", color = textMuted, fontFamily = piMono, fontSize = 9.sp)
+                        Box(
+                            modifier = Modifier
+                                .border(0.5.dp, textMuted, RoundedCornerShape(0.dp))
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        ) {
+                            Text("Browse", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
+                        }
                     }
                     Box(
                         modifier = Modifier
-                            .border(0.5.dp, accent, RoundedCornerShape(0.dp))
-                            .clickable(enabled = sessions.isNotEmpty()) { onNewSession() }
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .minimumInteractiveComponentSize()
+                            .clickable(
+                                enabled = sessions.isNotEmpty(),
+                                role = Role.Button,
+                                onClickLabel = "new session",
+                            ) { onNewSession() },
+                        contentAlignment = Alignment.Center,
                     ) {
-                        Text("[+ New]", color = accent, fontFamily = piMono, fontSize = 9.sp, fontWeight = FontWeight.Medium)
+                        Box(
+                            modifier = Modifier
+                                .border(0.5.dp, accent, RoundedCornerShape(0.dp))
+                                .padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Text("[+ New]", color = accent, fontFamily = piMono, fontSize = 10.sp, fontWeight = FontWeight.Medium)
+                        }
                     }
                 }
             }
@@ -299,7 +305,7 @@ fun TabletSidebar(
                 PiBox(borderColor = borderMuted) {
                     Column(modifier = Modifier.padding(vertical = 8.dp, horizontal = 8.dp)) {
                         Text("No sessions", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
-                        Text("will appear when agents connect", color = textMuted.copy(alpha = 0.6f), fontFamily = piMono, fontSize = 9.sp)
+                        Text("will appear when agents connect", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
                     }
                 }
             }
@@ -328,29 +334,15 @@ fun TabletSidebar(
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
         }
 
-        // ── Category filter tabs ─────────────────────────────
+        // ── Category filter tabs (shared with phone SessionsScreen) ──
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                listOf("all" to "All", "working" to "Working", "completed" to "Done", "archived" to "Archived").forEach { (key, label) ->
-                    val isActive = key == selectedCategory
-                    val count = if (key == "all") totalCount else (counts[key] ?: 0)
-                    val color = if (isActive) accent else textMuted
-                    val bgC = if (isActive) selectedBg else Color.Transparent
-                    Box(
-                        modifier = Modifier
-                            .background(bgC)
-                            .border(1.dp, if (isActive) accent else borderMuted, RoundedCornerShape(0.dp))
-                            .clickable { selectedCategory = key }
-                            .padding(horizontal = 5.dp, vertical = 1.dp)
-                    ) {
-                        Text("$label $count", color = color, fontFamily = piMono, fontSize = 8.sp,
-                            fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal)
-                    }
-                }
-            }
+            SessionCategoryTabs(
+                selected = selectedCategory,
+                counts = counts,
+                totalCount = totalCount,
+                onSelect = { selectedCategory = it },
+                modifier = Modifier.padding(horizontal = 8.dp),
+            )
         }
 
         // ── Saved session items ──────────────────────────────
@@ -358,13 +350,15 @@ fun TabletSidebar(
             item {
                 Text(
                     if (totalCount == 0) "No saved sessions yet." else "No $selectedCategory sessions.",
-                    color = textMuted, fontFamily = piMono, fontSize = 9.sp,
+                    color = textMuted, fontFamily = piMono, fontSize = 10.sp,
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                 )
             }
         } else {
             items(filteredSessions, key = { it.path }) { saved ->
-                SidebarSavedSessionItem(s = saved, onTap = { onSavedSessionTap(saved.path) })
+                // Shared with the phone saved-sessions list (ConnectPanel.kt);
+                // compact = true tightens spacing for the 300dp sidebar.
+                SavedSessionRow(s = saved, compact = true, onTap = { onSavedSessionTap(saved.path) })
             }
         }
 
@@ -396,9 +390,13 @@ fun SidebarSessionItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 44.dp)
                 .combinedClickable(
                     onClick = { onSelect() },
-                    onLongClick = { if (session.kind != "self" && !isBusy) onClose() }
+                    onClickLabel = "select session",
+                    onLongClick = { if (session.kind != "self" && !isBusy) onClose() },
+                    onLongClickLabel = "close session",
+                    role = Role.Button,
                 )
                 .padding(vertical = 3.dp, horizontal = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -417,65 +415,29 @@ fun SidebarSessionItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     when {
-                        isBusy -> "busy"
-                        isSelected -> "active"
-                        else -> "idle"
+                        isBusy -> "◉ busy"
+                        isSelected -> "● active"
+                        else -> "○ idle"
                     },
                     color = when {
                         isBusy -> thinkingBorder
                         isSelected -> accent
                         else -> success
                     },
-                    fontFamily = piMono, fontSize = 9.sp,
+                    fontFamily = piMono, fontSize = 10.sp,
                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                 )
                 Text(
                     "${session.messageCount} msgs · ${sessionTime(session.lastActivity)}",
-                    color = textMuted, fontFamily = piMono, fontSize = 8.sp,
+                    color = textMuted, fontFamily = piMono, fontSize = 10.sp,
                 )
             }
             // Kind badge
             Text(
                 if (session.kind == "self") "(host)" else "(peer)",
-                color = textMuted, fontFamily = piMono, fontSize = 8.sp,
+                color = textMuted, fontFamily = piMono, fontSize = 10.sp,
             )
         }
     }
 }
 
-/** Compact saved session item for the sidebar. */
-@Composable
-fun SidebarSavedSessionItem(s: SavedSession, onTap: () -> Unit) {
-    val label = s.name.ifBlank { s.firstMessage }.ifBlank { s.path.substringAfterLast('/') }
-    val trimmed = sessionLabel(label, 25)
-    val statusColor = when (s.status) {
-        "working" -> thinkingBorder
-        "archived" -> textMuted
-        else -> success
-    }
-    val statusIcon = when (s.status) {
-        "working" -> "◉"
-        "archived" -> "⊘"
-        else -> "✓"
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth()
-            .clickable { onTap() }
-            .padding(horizontal = 10.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("▸ ", color = accent, fontFamily = piMono, fontSize = 9.sp)
-        Column(modifier = Modifier.weight(1f)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(trimmed, color = textPrimary, fontFamily = piMono, fontSize = 10.sp,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                if (s.status != "completed") {
-                    Text("$statusIcon", color = statusColor, fontFamily = piMono, fontSize = 8.sp)
-                }
-            }
-            Text("${s.messageCount} msgs · ${sessionTime(s.modified)}",
-                color = textMuted, fontFamily = piMono, fontSize = 8.sp)
-        }
-    }
-}

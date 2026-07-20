@@ -2,14 +2,30 @@ package com.piremote.screens
 
 import android.content.Intent
 import android.util.Base64
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.piremote.FileDownload
+import com.piremote.theme.accent
+import com.piremote.theme.bgSecondary
+import com.piremote.theme.borderMuted
+import com.piremote.theme.textMuted
+import com.piremote.theme.textSecondary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -33,10 +49,20 @@ fun FileDownloadDialog(file: FileDownload, onDismiss: () -> Unit) {
     val sizeKb = file.data.length * 3 / 4 / 1024
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (file.source.isNotBlank()) "File from ${file.source}" else "File from pi") },
-        text = { Text("${file.name}\n${file.mimeType} · ~$sizeKb KB") },
+        title = {
+            Text(
+                if (file.source.isNotBlank()) "File from ${file.source}" else "File from pi",
+                color = accent, fontFamily = piMono, fontSize = 14.sp, fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Text(
+                "${file.name}\n${file.mimeType} · ~$sizeKb KB",
+                color = textSecondary, fontFamily = piMono, fontSize = 12.sp
+            )
+        },
         confirmButton = {
-            TextButton(onClick = {
+            val onShare: () -> Unit = {
                 scope.launch {
                     val uri = withContext(Dispatchers.IO) {
                         try {
@@ -60,8 +86,25 @@ fun FileDownloadDialog(file: FileDownload, onDismiss: () -> Unit) {
                     }
                     onDismiss()
                 }
-            }) { Text("Share / Save") }
+            }
+            Box(modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .border(BorderStroke(1.dp, accent), RoundedCornerShape(0.dp))
+                .clickable(role = Role.Button, onClickLabel = "share or save file") { onShare() }
+                .padding(horizontal = 10.dp, vertical = 4.dp)) {
+                Text("[SHARE / SAVE]", color = accent, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Dismiss") } },
+        dismissButton = {
+            Box(modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .border(BorderStroke(1.dp, borderMuted), RoundedCornerShape(0.dp))
+                .clickable(role = Role.Button, onClickLabel = "dismiss") { onDismiss() }
+                .padding(horizontal = 8.dp, vertical = 4.dp)) {
+                Text("[DISMISS]", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
+            }
+        },
+        containerColor = bgSecondary,
+        tonalElevation = 4.dp
     )
 }

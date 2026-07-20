@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
@@ -104,9 +105,15 @@ fun TerminalRenderView(frame: RenderFrame, onInput: (String) -> Unit = {}) {
                             )
                         }
                         if (tap.isNotEmpty()) {
-                            Box(modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onInput(tap) }
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 44.dp)
+                                    .clickable(
+                                        role = Role.Button,
+                                        onClickLabel = "select $tap",
+                                    ) { onInput(tap) },
+                                contentAlignment = Alignment.CenterStart,
                             ) { text() }
                         } else {
                             text()
@@ -135,7 +142,12 @@ fun TerminalRenderView(frame: RenderFrame, onInput: (String) -> Unit = {}) {
                                 }
                             )
                             Text("⏎", color = textMuted, fontFamily = piMono, fontSize = 14.sp,
-                                modifier = Modifier.clickable { onInput(input); input = "" })
+                                modifier = Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .clickable(
+                                        role = Role.Button,
+                                        onClickLabel = "send input",
+                                    ) { onInput(input); input = "" })
                         }
                     }
                 }

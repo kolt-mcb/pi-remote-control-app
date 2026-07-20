@@ -12,12 +12,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
@@ -27,8 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -59,13 +56,6 @@ fun TabletConnectScreen(
     // (async, after first compose). Typing mutates only `t`, never `url`.
     var t by remember(url) { mutableStateOf(url) }
     var showScanner by remember { mutableStateOf(true) } // default on for tablets
-    var inputMode by remember { mutableStateOf(false) }
-
-    val connect = {
-        val u = t.ifEmpty { "" }
-        vm.setServerUrl(u)
-        vm.connect()
-    }
 
     Row(modifier = modifier.fillMaxSize()) {
         // ── Left: QR Scanner ─────────────────────────────────
@@ -93,11 +83,11 @@ fun TabletConnectScreen(
                     modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("⊡", color = textMuted.copy(alpha = 0.4f), fontSize = 48.sp)
+                    Text("⊡", color = textMuted, fontSize = 48.sp)
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "Scanner closed",
-                        color = textMuted.copy(alpha = 0.6f),
+                        color = textMuted,
                         fontFamily = piMono,
                         fontSize = 12.sp,
                     )
@@ -107,7 +97,9 @@ fun TabletConnectScreen(
                         color = accent,
                         fontFamily = piMono,
                         fontSize = 11.sp,
-                        modifier = Modifier.clickable { showScanner = true },
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .clickable(role = Role.Button, onClickLabel = "reopen QR scanner") { showScanner = true },
                     )
                 }
             }
@@ -125,124 +117,23 @@ fun TabletConnectScreen(
                 .width(360.dp)
                 .fillMaxHeight()
                 .background(bg)
+                .verticalScroll(rememberScrollState())
         ) {
-            // Header
-            PiBox(header = "Pi Remote", borderColor = accent) {
-                Column(modifier = Modifier.padding(vertical = 6.dp, horizontal = 10.dp)) {
-                    Text(
-                        "Pi Remote Control — Terminal Mode",
-                        color = accent, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Control your Pi agent from your tablet",
-                        color = textMuted, fontFamily = piMono, fontSize = 11.sp
-                    )
-                }
-            }
+            // Header + Options menu + URL input + Connect + status + Quick
+            // Start — shared with the phone connect screen (ConnectPanel.kt).
+            ConnectPanel(
+                vm = vm,
+                urlText = t,
+                onUrlTextChange = { t = it },
+                status = status,
+                urlHistory = urlHistory,
+                subtitle = "Control your Pi agent from your tablet",
+                onScanRequest = { showScanner = true },
+                contentPadding = 10.dp,
+            )
+
+            // Fixed spacer: weight() does not work inside a scrollable column.
             Spacer(Modifier.height(12.dp))
-
-            // Options menu
-            PiBox(header = "Options") {
-                Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 10.dp)) {
-                    PiMenuItem(label = "1", title = "Connect to Pi server", action = { inputMode = true })
-                    PiMenuItem(label = "2", title = "Scan QR code", action = { showScanner = true })
-                    PiMenuItem(label = "3", title = "Recent connections", action = { if (urlHistory.isNotEmpty()) inputMode = true })
-
-                    // URL input area
-                    if (inputMode) {
-                        Spacer(Modifier.height(8.dp))
-                        PiBox(header = "URL", borderColor = accent) {
-                            Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 8.dp)) {
-                                TextField(
-                                    value = t,
-                                    onValueChange = { t = it },
-                                    placeholder = { Text("ws://<IP>:<port>", color = textMuted, fontFamily = piMono) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    colors = TextFieldDefaults.colors(
-                                        focusedContainerColor = bg,
-                                        unfocusedContainerColor = bg,
-                                        focusedIndicatorColor = accent,
-                                        unfocusedIndicatorColor = border,
-                                        focusedTextColor = textPrimary,
-                                        unfocusedTextColor = textPrimary,
-                                        cursorColor = accent
-                                    ),
-                                    textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 12.sp),
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                                    keyboardActions = KeyboardActions(onGo = { connect() })
-                                )
-
-                                // Recent connections
-                                if (urlHistory.isNotEmpty()) {
-                                    Spacer(Modifier.height(6.dp))
-                                    Text("Recent:", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
-                                    Spacer(Modifier.height(3.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                                        urlHistory.take(5).forEach { histUrl ->
-                                            PiTerminalChip(histUrl, onClick = { t = histUrl })
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-
-                        // Connect button
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(1.dp, accent, RoundedCornerShape(0.dp))
-                                .clickable { connect() }
-                                .padding(vertical = 8.dp)
-                        ) {
-                            Text("Connect", color = accent, fontFamily = piMono, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Center))
-                        }
-                    }
-
-                    // Connection status
-                    Spacer(Modifier.height(10.dp))
-                    when {
-                        status is ConnectionStatus.Connecting -> {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(color = accent, modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
-                                Text("Connecting...", color = accent, fontFamily = piMono, fontSize = 11.sp)
-                            }
-                        }
-                        status is ConnectionStatus.Error -> {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                Text("✕ ${status.message}", color = error, fontFamily = piMono, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                                Box(
-                                    modifier = Modifier
-                                        .border(1.dp, error, RoundedCornerShape(0.dp))
-                                        .clickable { vm.connect() }
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text("Retry", color = error, fontFamily = piMono, fontSize = 10.sp)
-                                }
-                            }
-                        }
-                        status is ConnectionStatus.Connected -> {
-                            Text("● Connected", color = success, fontFamily = piMono, fontSize = 11.sp)
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            // Quick Start Guide
-            PiBox(header = "Quick Start", borderColor = borderMuted) {
-                Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 10.dp)) {
-                    Text("1  pi install git:github.com/kolt-mcb/pi-remote-control", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
-                    Text("2  Run:  pi   (extension auto-loads; QR + URL print on startup)", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
-                    Text("3  Scan the QR or paste the ws://…?token=…  URL above", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
-                }
-            }
-
-            Spacer(Modifier.weight(1f))
         }
     }
 }
@@ -369,7 +260,7 @@ fun TabletQrScannerPane(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Button(onClick = { com.piremote.scan.parseScannedUrl(manualUrl)?.let { onConnected(it) } },
-                    enabled = manualUrl.isNotBlank(), modifier = Modifier.height(36.dp)) {
+                    enabled = manualUrl.isNotBlank(), modifier = Modifier.heightIn(min = 48.dp)) {
                     Text("Connect", fontSize = 12.sp)
                 }
             }

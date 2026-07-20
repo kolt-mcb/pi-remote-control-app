@@ -13,10 +13,16 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeContentPadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.core.content.ContextCompat
@@ -33,6 +39,10 @@ import com.piremote.screens.TabletConnectScreen
 import com.piremote.screens.TerminalRenderView
 import com.piremote.screens.FileDownloadDialog
 import com.piremote.screens.clearImageCaches
+import com.piremote.screens.piMono
+import com.piremote.theme.error
+import com.piremote.theme.textMuted
+import androidx.compose.ui.unit.sp
 import com.piremote.test.TestState
 import com.piremote.theme.PiRemoteTheme
 import com.piremote.theme.ThemeManager
@@ -83,15 +93,11 @@ class MainActivity : ComponentActivity() {
                 val urlHistory by st.urlHistory.collectAsState()
                 val sessions by st.sessions.collectAsState()
                 val selectedSession by st.selectedSession.collectAsState()
-                val commands by st.commands.collectAsState()
                 val uiRequests by st.uiRequests.collectAsState()
-                val statuses by st.statuses.collectAsState()
-                val widgets by st.widgets.collectAsState()
                 val compacting by st.compacting.collectAsState()
                 val notifyBanners by st.notifyBanners.collectAsState()
                 val uiTitle by st.uiTitle.collectAsState()
                 val clientCount by st.clientCount.collectAsState()
-                val turnSummary by st.turnSummary.collectAsState()
                 val savedSessions by st.savedSessions.collectAsState()
                 val renderFrame by st.renderFrame.collectAsState()
 
@@ -115,12 +121,13 @@ class MainActivity : ComponentActivity() {
 
                 // Back-press handling differs by layout:
                 // Phone: Chat → Sessions → Disconnect
-                // Tablet: sidebar is always visible, so back just disconnects
+                // Tablet: sidebar is always visible, so back asks to disconnect
                 val currentScreen by vm.connectedScreen.collectAsState()
+                var showDisconnectConfirm by remember { mutableStateOf(false) }
                 if (status == ConnectionStatus.Connected) {
                     BackHandler {
                         if (isTablet) {
-                            vm.disconnect()
+                            showDisconnectConfirm = true
                         } else {
                             when (currentScreen) {
                                 ConnectedScreen.Chat -> vm.showSessionsScreen()
@@ -128,6 +135,30 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
+                }
+                if (showDisconnectConfirm) {
+                    AlertDialog(
+                        onDismissRequest = { showDisconnectConfirm = false },
+                        title = { Text("Disconnect", fontFamily = piMono, fontSize = 14.sp) },
+                        text = {
+                            Text(
+                                "Disconnect from host?",
+                                fontFamily = piMono, fontSize = 12.sp
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = { showDisconnectConfirm = false; vm.disconnect() }
+                            ) {
+                                Text("Disconnect", color = error, fontFamily = piMono)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showDisconnectConfirm = false }) {
+                                Text("Cancel", color = textMuted, fontFamily = piMono)
+                            }
+                        }
+                    )
                 }
 
                 // Reconnect on resume if we have a URL but lost the connection.
@@ -164,22 +195,14 @@ class MainActivity : ComponentActivity() {
                         TabletLayout(
                             vm = vm,
                             st = st,
-                            url = url,
-                            input = inp,
-                            messages = ms,
-                            assist = assist,
                             status = status,
                             busy = busy,
                             sessions = sessions,
                             selectedSession = selectedSession,
-                            commands = commands,
-                            statuses = statuses,
-                            widgets = widgets,
                             compacting = compacting,
                             notifyBanners = notifyBanners,
                             uiTitle = uiTitle,
                             clientCount = clientCount,
-                            turnSummary = turnSummary,
                             savedSessions = savedSessions,
                             renderFrame = renderFrame,
                         )
@@ -196,15 +219,10 @@ class MainActivity : ComponentActivity() {
                         )
                     // ── Phone layout (unchanged) ─────────────────
                     status == ConnectionStatus.Connected && currentScreen == ConnectedScreen.Chat ->
-                        ChatScreen(vm, url, inp, ms, assist, status, busy, sessions, selectedSession,
-                            commands = commands,
-                            statuses = statuses,
-                            widgets = widgets,
-                            compacting = compacting,
+                        ChatScreen(vm, status, busy, sessions, selectedSession,
                             notifyBanners = notifyBanners,
                             uiTitle = uiTitle,
-                            clientCount = clientCount,
-                            turnSummary = turnSummary
+                            clientCount = clientCount
                         )
                     status == ConnectionStatus.Connected ->
                         SessionsScreen(vm, sessions, selectedSession, compacting, clientCount, savedSessions)

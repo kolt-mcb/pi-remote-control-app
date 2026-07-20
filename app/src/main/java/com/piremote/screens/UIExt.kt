@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -59,7 +60,10 @@ fun SelectDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String)
                         color = textMuted,
                         fontFamily = piMono,
                         fontSize = 12.sp,
-                        modifier = Modifier.clickable { onCancel(req.id) }.padding(4.dp)
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .clickable(role = Role.Button, onClickLabel = "close") { onCancel(req.id) }
+                            .padding(4.dp)
                     )
                 }
                 HorizontalDivider(color = borderMuted)
@@ -80,7 +84,8 @@ fun SelectDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String)
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .clickable { onRespond(req.id, "true") }
+                                .heightIn(min = 48.dp)
+                                .clickable(role = Role.Button, onClickLabel = "confirm yes") { onRespond(req.id, "true") }
                                 .padding(vertical = 14.dp)
                         ) {
                             Text(
@@ -96,7 +101,8 @@ fun SelectDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String)
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .clickable { onRespond(req.id, "false") }
+                                .heightIn(min = 48.dp)
+                                .clickable(role = Role.Button, onClickLabel = "confirm no") { onRespond(req.id, "false") }
                                 .padding(vertical = 14.dp)
                         ) {
                             Text(
@@ -116,7 +122,8 @@ fun SelectDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String)
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { onRespond(req.id, opt) }
+                                    .heightIn(min = 44.dp)
+                                    .clickable(role = Role.Button, onClickLabel = "select option") { onRespond(req.id, opt) }
                                     .padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
@@ -169,16 +176,18 @@ fun InputDialog(req: ExtensionUIRequest, onRespond: (id: String, value: String) 
         },
         confirmButton = {
             Box(modifier = Modifier
+                .minimumInteractiveComponentSize()
                 .border(BorderStroke(1.dp, accent), RoundedCornerShape(0.dp))
-                .clickable(enabled = text.isNotBlank()) { onRespond(req.id, text) }
+                .clickable(enabled = text.isNotBlank(), role = Role.Button, onClickLabel = "confirm") { onRespond(req.id, text) }
                 .padding(horizontal = 10.dp, vertical = 4.dp)) {
                 Text("[OK]", color = accent, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             Box(modifier = Modifier
+                .minimumInteractiveComponentSize()
                 .border(BorderStroke(1.dp, borderMuted), RoundedCornerShape(0.dp))
-                .clickable { onCancel(req.id) }
+                .clickable(role = Role.Button, onClickLabel = "cancel") { onCancel(req.id) }
                 .padding(horizontal = 8.dp, vertical = 4.dp)) {
                 Text("[CANCEL]", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
             }
@@ -207,56 +216,3 @@ fun NotifyBanner(msg: String, type: String) {
         }
     }
 }
-
-/** Pi Terminal Styled Widget panel for setWidget() */
-@Composable
-fun PiWidgetPanel(key: String, lines: List<String>) {
-    Column {
-        // Top: ┌─ key ──
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 0.dp)) {
-            Text("┌", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
-            Text("─ $key", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
-            Spacer(Modifier.weight(1f))
-            Text("┐", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
-        }
-        // Body with left border
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(2.dp), verticalAlignment = Alignment.Top) {
-            Text("│", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
-            Column(modifier = Modifier.weight(1f).padding(vertical = 3.dp, horizontal = 4.dp)) {
-                lines.forEach { line ->
-                    Text(buildAnsiText(parseAnsiLine(line), textSecondary), fontFamily = piMono, fontSize = 11.sp)
-                }
-            }
-        }
-        // Bottom: └──────
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Text("└", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
-            Spacer(Modifier.weight(1f))
-            Text("┘", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
-        }
-    }
-}
-
-/** Pi Terminal Styled Status bar for setStatus() */
-@Composable
-fun PiStatusBarLine(statuses: Map<String, String>) {
-    if (statuses.isEmpty()) return
-    Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().background(bgSecondary)
-            .border(BorderStroke(0.5.dp, borderMuted), RoundedCornerShape(0.dp))
-            .padding(horizontal = 10.dp, vertical = 2.dp)) {
-        Text("├", color = borderMuted, fontFamily = piMono, fontSize = 10.sp)
-        statuses.forEach { (_, text) ->
-            if (text.isNotBlank()) Text(buildAnsiText(parseAnsiLine(text), textMuted), fontFamily = piMono, fontSize = 10.sp)
-        }
-        Spacer(Modifier.weight(1f))
-    }
-}
-
-// ── Backwards-compatible aliases ──────────────────────────────────────
-
-@Composable
-fun WidgetPanel(key: String, lines: List<String>) = PiWidgetPanel(key, lines)
-
-@Composable
-fun StatusBarLine(statuses: Map<String, String>) = PiStatusBarLine(statuses)

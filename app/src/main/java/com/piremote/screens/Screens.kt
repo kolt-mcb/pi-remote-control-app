@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -52,6 +51,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.semantics.Role
 import com.piremote.theme.*
 import com.piremote.tty.parseAnsiLine
 import com.piremote.tty.parseEdits
@@ -178,11 +178,6 @@ fun ConnectScreen(
     // only mutates `t`, never `url`, so this never clobbers user input.
     var t by remember(url) { mutableStateOf(url) }
     var showScanner by remember { mutableStateOf(false) }
-    var inputMode by remember { mutableStateOf(false) }
-    val connect = {
-        val u = t.ifEmpty { "" }
-        vm.setServerUrl(u); vm.connect()
-    }
 
     if (showScanner) {
         com.piremote.scan.QrScanner(
@@ -198,125 +193,22 @@ fun ConnectScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(bg)) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            
-            // Header bar
-            PiBox(header = "Pi Remote", borderColor = accent) {
-                Column(modifier = Modifier.padding(vertical = 6.dp, horizontal = 4.dp)) {
-                    Text(
-                        "Pi Remote Control — Terminal Mode",
-                        color = accent, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Control your Pi agent from your phone",
-                        color = textMuted, fontFamily = piMono, fontSize = 11.sp
-                    )
-                }
-            }
-            Spacer(Modifier.height(12.dp))
+        Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            // Header + Options menu + URL input + Connect + status + Quick
+            // Start — shared with the tablet connect screen (ConnectPanel.kt).
+            ConnectPanel(
+                vm = vm,
+                urlText = t,
+                onUrlTextChange = { t = it },
+                status = status,
+                urlHistory = urlHistory,
+                subtitle = "Control your Pi agent from your phone",
+                onScanRequest = { showScanner = true },
+                contentPadding = 4.dp,
+            )
 
-            // Menu
-            PiBox(header = "Options") {
-                Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                    PiMenuItem(label = "1", title = "Connect to Pi server", action = { inputMode = true })
-                    PiMenuItem(label = "2", title = "Scan QR code", action = { showScanner = true })
-                    PiMenuItem(label = "3", title = "Recent connections", action = { if (urlHistory.isNotEmpty()) inputMode = true })
-                    
-                    // URL input area
-                    if (inputMode) {
-                        Spacer(Modifier.height(8.dp))
-                        PiBox(header = "URL", borderColor = accent) {
-                            Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                                TextField(
-                                    value = t,
-                                    onValueChange = { t = it },
-                                    placeholder = { Text("ws://<IP>:<port>", color = textMuted, fontFamily = piMono) },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    singleLine = true,
-                                    colors = TextFieldDefaults.colors(
-                                        focusedContainerColor = bg,
-                                        unfocusedContainerColor = bg,
-                                        focusedIndicatorColor = accent,
-                                        unfocusedIndicatorColor = border,
-                                        focusedTextColor = textPrimary,
-                                        unfocusedTextColor = textPrimary,
-                                        cursorColor = accent
-                                    ),
-                                    textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 12.sp),
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
-                                    keyboardActions = KeyboardActions(onGo = { connect() })
-                                )
-                                
-                                // Recent connections
-                                if (urlHistory.isNotEmpty()) {
-                                    Spacer(Modifier.height(6.dp))
-                                    Text("Recent:", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
-                                    Spacer(Modifier.height(3.dp))
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
-                                        urlHistory.take(5).forEach { histUrl ->
-                                            PiTerminalChip(histUrl, onClick = { t = histUrl })
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-                        
-                        // Connect button
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .border(1.dp, accent, RoundedCornerShape(0.dp))
-                                .clickable { connect() }
-                                .padding(vertical = 8.dp)
-                        ) {
-                            Text("Connect", color = accent, fontFamily = piMono, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Center))
-                        }
-                    }
-                    
-                    // Connection status
-                    Spacer(Modifier.height(10.dp))
-                    when {
-                        status is ConnectionStatus.Connecting -> {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(color = accent, modifier = Modifier.size(12.dp), strokeWidth = 2.dp)
-                                Text("Connecting...", color = accent, fontFamily = piMono, fontSize = 11.sp)
-                            }
-                        }
-                        status is ConnectionStatus.Error -> {
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                Text("✕ ${status.message}", color = error, fontFamily = piMono, fontSize = 11.sp, modifier = Modifier.weight(1f))
-                                Box(
-                                    modifier = Modifier
-                                        .border(1.dp, error, RoundedCornerShape(0.dp))
-                                        .clickable { vm.connect() }
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text("Retry", color = error, fontFamily = piMono, fontSize = 10.sp)
-                                }
-                            }
-                        }
-                        status is ConnectionStatus.Connected -> {
-                            Text("● Connected", color = success, fontFamily = piMono, fontSize = 11.sp)
-                        }
-                    }
-                }
-            }
-            
-            Spacer(Modifier.height(12.dp))
-            
-            // Quick Start Guide
-            PiBox(header = "Quick Start", borderColor = borderMuted) {
-                Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                    Text("1  pi install git:github.com/kolt-mcb/pi-remote-control", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
-                    Text("2  Run:  pi   (extension auto-loads; QR + URL print on startup)", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
-                    Text("3  Scan the QR or paste the ws://…?token=…  URL above", color = textSecondary, fontFamily = piMono, fontSize = 10.sp)
-                }
-            }
-
-            Spacer(Modifier.weight(1f))
+            // Fixed spacer: weight() has no effect inside a scrollable column.
+            Spacer(Modifier.height(48.dp))
         }
 
         // Tappable version display in bottom-right doubles as the update
@@ -353,29 +245,39 @@ fun UpdateAffordance(modifier: Modifier = Modifier) {
     }
 
     Column(horizontalAlignment = Alignment.End, modifier = modifier) {
+        // Bordered chip (PiTerminalChip-style) so the update entry point reads
+        // as tappable instead of a stray version string.
         Text(
-            text = "v$currentCode · $currentName",
-            color = textMuted.copy(alpha = 0.5f),
-            fontFamily = piMono, fontSize = 9.sp,
-            modifier = Modifier.clickable(enabled = !checking && !downloading) {
-                checking = true
-                scope.launch {
-                    val r = updater.fetchLatest()
-                    checking = false
-                    if (r == null) {
-                        status = "couldn't reach updates"
-                    } else if (r.versionCode <= currentCode) {
-                        status = "up to date"
-                    } else {
-                        latest = r
+            text = "v$currentCode · $currentName · updates",
+            color = textMuted,
+            fontFamily = piMono, fontSize = 10.sp,
+            modifier = Modifier
+                .minimumInteractiveComponentSize()
+                .border(0.5.dp, borderMuted, RoundedCornerShape(0.dp))
+                .clickable(
+                    enabled = !checking && !downloading,
+                    role = Role.Button,
+                    onClickLabel = "check for updates"
+                ) {
+                    checking = true
+                    scope.launch {
+                        val r = updater.fetchLatest()
+                        checking = false
+                        if (r == null) {
+                            status = "couldn't reach updates"
+                        } else if (r.versionCode <= currentCode) {
+                            status = "up to date"
+                        } else {
+                            latest = r
+                        }
                     }
                 }
-            }
+                .padding(horizontal = 5.dp, vertical = 2.dp)
         )
         if (checking) {
-            Text("checking…", color = textMuted.copy(alpha = 0.7f), fontFamily = piMono, fontSize = 9.sp)
+            Text("checking…", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
         } else if (status != null) {
-            Text(status!!, color = textMuted.copy(alpha = 0.7f), fontFamily = piMono, fontSize = 9.sp)
+            Text(status!!, color = textMuted, fontFamily = piMono, fontSize = 10.sp)
         }
     }
 
@@ -442,17 +344,19 @@ fun UpdateAffordance(modifier: Modifier = Modifier) {
 
 /** Terminal-style menu item */
 @Composable
-fun PiMenuItem(label: String, title: String, action: () -> Unit) {
+fun PiMenuItem(label: String, title: String, enabled: Boolean = true, action: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { action() }
+            .minimumInteractiveComponentSize()
+            .clickable(enabled = enabled, role = Role.Button, onClickLabel = title) { action() }
             .padding(vertical = 3.dp, horizontal = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Text("  ", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
         Text("[${label}]", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
-        Text(title, color = textSecondary, fontFamily = piMono, fontSize = 12.sp)
+        Text(title, color = if (enabled) textSecondary else textMuted, fontFamily = piMono, fontSize = 12.sp)
     }
 }
 
@@ -464,7 +368,8 @@ fun PiTerminalChip(label: String, onClick: () -> Unit) {
         short,
         color = accent, fontFamily = piMono, fontSize = 10.sp,
         modifier = Modifier
-            .clickable { onClick() }
+            .minimumInteractiveComponentSize()
+            .clickable(role = Role.Button, onClickLabel = label) { onClick() }
             .border(0.5.dp, borderAccent, RoundedCornerShape(0.dp))
             .padding(horizontal = 5.dp, vertical = 2.dp)
     )
@@ -535,8 +440,9 @@ fun SessionsScreen(
             ) {
                 Box(
                     modifier = Modifier
+                        .minimumInteractiveComponentSize()
                         .border(0.5.dp, accent, RoundedCornerShape(0.dp))
-                        .clickable(enabled = sessions.isNotEmpty()) {
+                        .clickable(enabled = sessions.isNotEmpty(), role = Role.Button, onClickLabel = "start new session") {
                             vm.spawnPeer()
                             // Don't navigate to chat yet — the peer takes a
                             // moment to boot and join. The notify banner
@@ -561,11 +467,17 @@ fun SessionsScreen(
                     Column(modifier = Modifier.padding(vertical = 12.dp, horizontal = 10.dp)) {
                         Text("No sessions available", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
                         Spacer(Modifier.height(4.dp))
-                        Text("Sessions will appear when agents connect", color = textMuted.copy(alpha = 0.6f), fontFamily = piMono, fontSize = 10.sp)
+                        Text("Sessions will appear when agents connect", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
                     }
                 }
             } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 6.dp)) {
+                // Bounded: an unbounded LazyColumn here starves the Saved-sessions
+                // box and nav hints below on a full session list.
+                LazyColumn(
+                    modifier = Modifier.weight(1f, fill = false).heightIn(max = 280.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    contentPadding = PaddingValues(horizontal = 6.dp)
+                ) {
                     items(sessions, key = { it.id }) { session ->
                         val isSelected = session.id == selectedSession
                         val isBusy = session.status == "busy"
@@ -583,39 +495,13 @@ fun SessionsScreen(
             // see PR #20 / commit message.)
             PiBox(header = "Saved sessions", borderColor = borderMuted) {
                 Column(modifier = Modifier.padding(vertical = 4.dp, horizontal = 4.dp)) {
-                    // ── Category filter tabs ─────────────────────────
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val categories = listOf(
-                            "all" to "All",
-                            "working" to "Working",
-                            "completed" to "Completed",
-                            "archived" to "Archived"
-                        )
-                        categories.forEach { (key, label) ->
-                            val isActive = key == selectedCategory
-                            val count = if (key == "all") totalCount else (counts[key] ?: 0)
-                            val color = if (isActive) accent else textMuted
-                            val bgC = if (isActive) selectedBg else Color.Transparent
-                            Box(
-                                modifier = Modifier
-                                    .background(bgC)
-                                    .border(1.dp, if (isActive) accent else borderMuted, RoundedCornerShape(0.dp))
-                                    .clickable { selectedCategory = key }
-                                    .padding(horizontal = 7.dp, vertical = 3.dp)
-                            ) {
-                                Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text(label, color = color, fontFamily = piMono, fontSize = 10.sp,
-                                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal)
-                                    Text("($count)", color = if (isActive) color else textMuted.copy(alpha = 0.6f),
-                                        fontFamily = piMono, fontSize = 9.sp)
-                                }
-                            }
-                        }
-                    }
+                    // ── Category filter tabs (shared with tablet sidebar) ──
+                    SessionCategoryTabs(
+                        selected = selectedCategory,
+                        counts = counts,
+                        totalCount = totalCount,
+                        onSelect = { selectedCategory = it },
+                    )
                     Spacer(Modifier.height(6.dp))
 
                     // ── Filtered session list ────────────────────────
@@ -661,73 +547,6 @@ fun SessionsScreen(
     }
 }
 
-/** Row in the saved-sessions list. Tap to spawn `pi --session <path>` as a peer. */
-@Composable
-fun SavedSessionRow(s: SavedSession, onTap: () -> Unit) {
-    val label = s.name.ifBlank { s.firstMessage }.ifBlank { s.path.substringAfterLast('/') }
-    val trimmed = sessionLabel(label)
-    val whenStr = sessionTime(s.modified)
-
-    // Status badge color + icon
-    val statusColor = when (s.status) {
-        "working" -> thinkingBorder
-        "archived" -> textMuted
-        else -> success
-    }
-    val statusLabel = when (s.status) {
-        "working" -> "working"
-        "archived" -> "archived"
-        else -> "completed"
-    }
-    val statusIcon = when (s.status) {
-        "working" -> "◉"
-        "archived" -> "⊘"
-        else -> "✓"
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth()
-            .clickable { onTap() }
-            .padding(horizontal = 6.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.Top
-    ) {
-        Text("▸ ", color = accent, fontFamily = piMono, fontSize = 11.sp)
-        Column(modifier = Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(trimmed, color = textPrimary, fontFamily = piMono, fontSize = 12.sp, maxLines = 1)
-                // Status badge — only show non-default (non-completed) status
-                if (s.status != "completed") {
-                    Box(
-                        modifier = Modifier
-                            .border(0.5.dp, statusColor, RoundedCornerShape(0.dp))
-                            .padding(horizontal = 4.dp, vertical = 1.dp)
-                    ) {
-                        Text(
-                            "$statusIcon $statusLabel",
-                            color = statusColor, fontFamily = piMono, fontSize = 9.sp
-                        )
-                    }
-                }
-            }
-            // Model's last reply preview — shown when available so you can see
-            // what the agent is waiting on without opening the session.
-            if (s.lastAssistantMessage.isNotBlank()) {
-                val preview = s.lastAssistantMessage.trim().take(140) +
-                    if (s.lastAssistantMessage.length > 140) "…" else ""
-                Text(
-                    "π ${preview}",
-                    color = thinkingLow,
-                    fontFamily = piMono, fontSize = 10.sp,
-                    fontStyle = FontStyle.Italic,
-                    maxLines = 2
-                )
-            }
-            Text("${s.messageCount} msg${if (s.messageCount != 1) "s" else ""} · $whenStr",
-                color = textMuted, fontFamily = piMono, fontSize = 10.sp, maxLines = 1)
-        }
-    }
-}
-
 /** Card for a single session in the sessions list */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -747,7 +566,10 @@ fun SessionCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 44.dp)
                 .combinedClickable(
+                    role = Role.Button,
+                    onClickLabel = "switch to this session",
                     onClick = { onClick() },
                     onLongClick = {
                         // Don't allow closing the host (self) session
@@ -773,21 +595,21 @@ fun SessionCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         when {
-                            isBusy -> Text("busy", color = thinkingBorder, fontFamily = piMono, fontSize = 10.sp, fontStyle = FontStyle.Italic, fontWeight = FontWeight.SemiBold)
-                            isSelected -> Text("active", color = accent, fontFamily = piMono, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                            else -> Text("idle", color = success, fontFamily = piMono, fontSize = 10.sp)
+                            isBusy -> Text("◉ busy", color = thinkingBorder, fontFamily = piMono, fontSize = 10.sp, fontStyle = FontStyle.Italic, fontWeight = FontWeight.SemiBold)
+                            isSelected -> Text("● active", color = accent, fontFamily = piMono, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            else -> Text("○ idle", color = success, fontFamily = piMono, fontSize = 10.sp)
                         }
                         if (session.kind == "self") {
-                            Text("(host)", color = textMuted, fontFamily = piMono, fontSize = 9.sp)
+                            Text("(host)", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
                         } else {
-                            Text("(peer)", color = textMuted, fontFamily = piMono, fontSize = 9.sp)
+                            Text("(peer)", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
                         }
                     }
                 }
 
                 // Status label
                 when {
-                    isBusy -> Text("working", color = thinkingMedium, fontFamily = piMono, fontSize = 9.sp)
+                    isBusy -> Text("◉ working", color = thinkingMedium, fontFamily = piMono, fontSize = 10.sp)
                     isSelected -> Text("✓", color = accent, fontFamily = piMono, fontSize = 12.sp)
                 }
             }
@@ -799,14 +621,14 @@ fun SessionCard(
                 Text("${session.messageCount} msgs", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
                 Text("turn ${session.turnIndex}", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
                 Spacer(Modifier.weight(1f))
-                Text(sessionTime(session.lastActivity), color = textMuted.copy(alpha = 0.6f), fontFamily = piMono, fontSize = 9.sp)
+                Text(sessionTime(session.lastActivity), color = textMuted, fontFamily = piMono, fontSize = 10.sp)
             }
 
             if (isBusy) {
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(modifier = Modifier.size(8.dp), color = thinkingBorder, strokeWidth = 1.5.dp)
-                    Text("agent is processing...", color = thinkingBorder, fontFamily = piMono, fontSize = 9.sp, fontStyle = FontStyle.Italic)
+                    Text("agent is processing...", color = thinkingBorder, fontFamily = piMono, fontSize = 10.sp, fontStyle = FontStyle.Italic)
                 }
             }
         }
@@ -864,111 +686,18 @@ fun PiHeader(status: ConnectionStatus, busy: Boolean, disconnect: () -> Unit, ti
                     title?.take(30) ?: "Pi Remote",
                     color = accent, fontFamily = piMono, fontSize = 12.sp, fontWeight = FontWeight.Bold
                 )
-                if (busy) Text("(thinking)", color = thinkingBorder, fontFamily = piMono, fontSize = 10.sp, fontStyle = FontStyle.Italic)
+                if (busy) Text("(◉ thinking)", color = thinkingBorder, fontFamily = piMono, fontSize = 10.sp, fontStyle = FontStyle.Italic)
             }
             Box(
                 modifier = Modifier
+                    .minimumInteractiveComponentSize()
                     .border(1.dp, error, RoundedCornerShape(0.dp))
-                    .clickable { disconnect() }
+                    .clickable(role = Role.Button, onClickLabel = "disconnect from host") { disconnect() }
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text("[Disconnect]", color = error, fontFamily = piMono, fontSize = 10.sp)
             }
         }
-    }
-}
-
-// ── Pi Terminal Footer ─────────────────────────────────────────────────
-
-@Composable
-fun PiFooter(
-    sessions: List<RemoteSession>,
-    selectedSession: String,
-    messageCount: Int,
-    compacting: Boolean = false,
-    clientCount: Int = 0
-) {
-    Column(modifier = Modifier.fillMaxWidth().background(footerBg)) {
-        HorizontalDivider(color = border, thickness = 1.dp)
-        Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            val active = sessions.find { it.id == selectedSession }
-            // Single ellipsized line: session names derive from the first user
-            // message on the host, which can be arbitrarily long pasted text.
-            Text(
-                "session: ${active?.name ?: "none"}",
-                color = if (active?.status == "busy") thinkingBorder else accent,
-                fontFamily = piMono, fontSize = 10.sp,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                modifier = Modifier.weight(2f, fill = false)
-            )
-            Text("agents: ${sessions.size}", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
-            if (clientCount > 0) Text("connected: $clientCount", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
-            Spacer(Modifier.weight(1f))
-            Text("messages: $messageCount", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
-        }
-        if (compacting) {
-            HorizontalDivider(color = borderMuted)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 3.dp)) {
-                CircularProgressIndicator(modifier = Modifier.size(10.dp), color = thinkingBorder, strokeWidth = 1.5.dp)
-                Text("compacting...", color = thinkingBorder, fontFamily = piMono, fontSize = 10.sp, fontStyle = FontStyle.Italic)
-            }
-        }
-    }
-}
-
-// ── Compact Turn Summary ──────────────────────────────────────────────
-
-/**
- * Compact summary bar shown after agent finishes a turn.
- * 
- *   ┌─ Last turn (5 calls) ─┐
- *   │ bash(2) read(3) web(1) │
- *   └────────────────────────┘
- * 
- * Terminal-styled chips showing tool usage counts.
- */
-@Composable
-fun TurnSummaryPanel(summary: PiWebSocket.TurnSummary) {
-    PiRoundedBox(
-        header = "Last turn (${summary.totalCalls} calls)",
-        borderColor = borderMuted,
-        content = {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 3.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                summary.toolsUsed.forEach { tool ->
-                    PiTurnToolChip(tool.name, tool.count)
-                }
-            }
-        }
-    )
-}
-
-/** Single tool chip: `toolName(N)` with icon */
-@Composable
-fun PiTurnToolChip(name: String, count: Int) {
-    val icon = when {
-        name == "bash" -> "⌘"
-        name == "read" -> "📖"
-        name == "write" -> "✏"
-        name == "edit" -> "🔧"
-        name == "ToolSearch" -> "🔍"
-        name == "WebFetch" -> "🌐"
-        else -> "●"
-    }
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(3.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(icon, fontFamily = piMono, fontSize = 10.sp)
-        Text(name, color = textPrimary, fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-        Text("($count)", color = textMuted, fontFamily = piMono, fontSize = 10.sp)
     }
 }
 
@@ -993,7 +722,7 @@ fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect:
                     overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     modifier = Modifier.weight(3f, fill = false)
                 )
-                Text(if (isActive) "busy" else "idle",
+                Text(if (isActive) "◉ busy" else "○ idle",
                     color = if (isActive) thinkingBorder else textMuted, fontFamily = piMono, fontSize = 10.sp)
                 Spacer(Modifier.weight(1f))
                 Text("${sess.messageCount} msgs • ${sessionTime(sess.lastActivity)}",
@@ -1015,7 +744,8 @@ fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect:
                 
                 Box(
                     modifier = Modifier
-                        .clickable { onSelect(sess.id) }
+                        .minimumInteractiveComponentSize()
+                        .clickable(role = Role.Button, onClickLabel = "switch to ${sessionLabel(sess.name, 10)}") { onSelect(sess.id) }
                         .background(if (isSelected) selectedBg else Color.Transparent)
                         .border(1.dp, if (isSelected) accent else borderMuted, RoundedCornerShape(0.dp))
                         .padding(horizontal = 6.dp, vertical = 2.dp)
@@ -1040,30 +770,15 @@ fun PiSessionSelector(sessions: List<RemoteSession>, selected: String, onSelect:
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun ChatScreen(
-    vm: ChatViewModel, url: String, input: String, messages: List<ChatMessage>,
-    assist: String, status: ConnectionStatus, busy: Boolean,
+    vm: ChatViewModel,
+    status: ConnectionStatus, busy: Boolean,
     sessions: List<RemoteSession> = emptyList(),
     selectedSession: String = "",
-    commands: List<RemoteCommand> = emptyList(),
-    statuses: Map<String, String> = emptyMap(),
-    widgets: Map<String, List<String>> = emptyMap(),
-    compacting: Boolean = false,
     notifyBanners: List<BannerMessage> = emptyList(),
     uiTitle: String? = null,
     clientCount: Int = 0,
-    turnSummary: PiWebSocket.TurnSummary? = null,
     showSessionSelector: Boolean = true,
 ) {
-    val ls = rememberLazyListState()
-    // Pin to bottom when a message arrives OR the streaming tail grows —
-    // block count inside the tail message changes with content length.
-    val scrollKey = Triple(messages.size, messages.lastOrNull()?.content?.length ?: 0, assist.length)
-    LaunchedEffect(scrollKey) {
-        val last = ls.layoutInfo.totalItemsCount - 1
-        if (last > 0) ls.animateScrollToItem(last)
-    }
-
-
         // Mirror state computed up front: when a live frame is showing, the
         // mirror already renders pi's FULL screen (its loader, status line,
         // widgets, footer), so we suppress the app's duplicate chrome below to
@@ -1172,98 +887,6 @@ fun ChatScreen(
     }
 }
 
-// ── Animated working-status line (matches pi's loader) ────────────────
-
-// Pi uses the standard cli-spinners "dots" set, advanced every 80ms.
-// Mirrored here verbatim so the app reads like pi's own footer.
-private val piSpinnerFrames = listOf("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-
-/**
- * `⠋ Working... (5s · tap to interrupt)` floating just above the input.
- *
- * Verbatim copy of pi's working indicator: braille-dot spinner + literal
- * "Working..." text, no cycling verbs. The (esc to interrupt) hint
- * becomes (tap to interrupt) because we have no esc on touch — tap arms
- * steer mode so the user's next message lands as a course-correction.
- * Elapsed seconds are appended because they're useful on a remote.
- */
-@Composable
-fun PiWorkingStatus(busyStartedAt: Long, onInterrupt: () -> Unit) {
-    // 80ms tick for the spinner — exact match for pi's DEFAULT_INTERVAL_MS.
-    val frameIdx by produceState(initialValue = 0) {
-        var idx = 0
-        while (true) {
-            kotlinx.coroutines.delay(80)
-            value = idx
-            idx = (idx + 1) % piSpinnerFrames.size
-        }
-    }
-    // Elapsed-seconds counter — restarts when busyStartedAt changes.
-    val elapsed by produceState(initialValue = 0L, key1 = busyStartedAt) {
-        while (true) {
-            kotlinx.coroutines.delay(500)
-            value = ((System.currentTimeMillis() - busyStartedAt) / 1000).coerceAtLeast(0)
-        }
-    }
-
-    Row(
-        modifier = Modifier.fillMaxWidth()
-            .background(bg)
-            .clickable { onInterrupt() }
-            .padding(horizontal = 10.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(piSpinnerFrames[frameIdx], color = accent, fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-        Text("Working...", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
-        Text("(${elapsed}s · tap to interrupt)", color = textMuted.copy(alpha = 0.7f), fontFamily = piMono, fontSize = 11.sp)
-        Spacer(Modifier.weight(1f))
-    }
-}
-
-/** Blinking block cursor for streaming text. */
-@Composable
-fun PiBlinkBlock(color: Color = accent) {
-    val on by produceState(initialValue = true) {
-        var state = true
-        while (true) {
-            kotlinx.coroutines.delay(500)
-            state = !state
-            value = state
-        }
-    }
-    Text(
-        if (on) "▌" else " ",
-        color = color, fontFamily = piMono, fontSize = 13.sp
-    )
-}
-
-/**
- * pi's startup header, reproduced for the phone so a fresh connection greets
- * you the way pi's terminal does. pi prints (interactive-mode): an accent logo,
- * compact keybinding hints, then an onboarding line. We mirror that structure
- * and the synced theme colors. The keyboard hints collapse to `/` — the only
- * one with a touch equivalent (^C/^L/^O don't apply here); copy stays pi's.
- */
-@Composable
-fun PiStartupHeader() {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 12.dp)) {
-        Text("pi", color = accent, fontWeight = FontWeight.Bold, fontFamily = piMono, fontSize = 16.sp)
-        Spacer(Modifier.height(8.dp))
-        // Compact hint line — pi draws the key dim, the label muted.
-        Row {
-            Text("/", color = textMuted, fontFamily = piMono, fontSize = 12.sp)
-            Text(" commands", color = textSecondary, fontFamily = piMono, fontSize = 12.sp)
-        }
-        Spacer(Modifier.height(8.dp))
-        // Onboarding line — verbatim from pi.
-        Text(
-            "Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.",
-            color = textMuted, fontFamily = piMono, fontSize = 12.sp, lineHeight = 17.sp
-        )
-    }
-}
-
 /** Opaque token — increment to reset folder picker state (used after mkdir success). */
 data class DirRefresh(val token: Long)
 
@@ -1291,7 +914,7 @@ fun FolderPickerDialog(
             Column {
                 Text("Select working directory", fontFamily = piMono, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(2.dp))
-                Text(currentDir, color = textMuted, fontFamily = piMono, fontSize = 9.sp, maxLines = 1)
+                Text(currentDir, color = textMuted, fontFamily = piMono, fontSize = 10.sp, maxLines = 1)
             }
         },
         text = {
@@ -1319,7 +942,7 @@ fun FolderPickerDialog(
                     TextField(
                         value = folderName,
                         onValueChange = { folderName = it },
-                        placeholder = { Text("Folder name", color = textMuted, fontFamily = piMono, fontSize = 9.sp) },
+                        placeholder = { Text("Folder name", color = textMuted, fontFamily = piMono, fontSize = 10.sp) },
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         singleLine = true,
                         colors = TextFieldDefaults.colors(
@@ -1327,7 +950,7 @@ fun FolderPickerDialog(
                             focusedIndicatorColor = accent, unfocusedIndicatorColor = border,
                             focusedTextColor = textPrimary, unfocusedTextColor = textPrimary
                         ),
-                        textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 9.sp),
+                        textStyle = LocalTextStyle.current.copy(color = textPrimary, fontFamily = piMono, fontSize = 10.sp),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                         keyboardActions = KeyboardActions(onDone = {
                             val name = folderName.trim()
@@ -1337,7 +960,7 @@ fun FolderPickerDialog(
                 }
                 createError?.let { err ->
                     Spacer(Modifier.height(4.dp))
-                    Text(err, color = error, fontFamily = piMono, fontSize = 9.sp)
+                    Text(err, color = error, fontFamily = piMono, fontSize = 10.sp)
                 }
                 Spacer(Modifier.height(6.dp))
                 // ── Directory listing ──────────────────────────
@@ -1356,10 +979,12 @@ fun FolderPickerDialog(
                             item {
                                 PiBox(borderColor = borderMuted) {
                                     Row(
-                                        Modifier.fillMaxWidth().clickable {
-                                            val parent = currentDir.substringBeforeLast("/").takeIf { it.isNotBlank() } ?: "/"
-                                            onNavigate(parent)
-                                        }.padding(horizontal = 6.dp, vertical = 4.dp),
+                                        Modifier.fillMaxWidth()
+                                            .minimumInteractiveComponentSize()
+                                            .clickable(role = Role.Button, onClickLabel = "go to parent folder") {
+                                                val parent = currentDir.substringBeforeLast("/").takeIf { it.isNotBlank() } ?: "/"
+                                                onNavigate(parent)
+                                            }.padding(horizontal = 6.dp, vertical = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text("↑", color = textMuted, fontFamily = piMono, fontSize = 11.sp)
@@ -1379,7 +1004,9 @@ fun FolderPickerDialog(
                         items(dirs, key = { it.path }) { dir ->
                             PiBox(header = dir.name, borderColor = borderMuted) {
                                 Row(
-                                    Modifier.fillMaxWidth().clickable { onSelect(dir.path) }
+                                    Modifier.fillMaxWidth()
+                                        .minimumInteractiveComponentSize()
+                                        .clickable(role = Role.Button, onClickLabel = "select ${dir.name}") { onSelect(dir.path) }
                                         .padding(horizontal = 6.dp, vertical = 4.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
