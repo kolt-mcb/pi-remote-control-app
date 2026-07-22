@@ -408,7 +408,53 @@ fun SessionsScreen(
     // Count per category for tab badges
     val counts = savedSessions.groupingBy { it.status }.eachCount()
     val totalCount = savedSessions.size
-    
+
+    // Folder picker state — same flow as the tablet sidebar (TabletLayout):
+    // browse host dirs, optionally mkdir, then spawn the peer in the chosen dir.
+    var showFolderPicker by remember { mutableStateOf(false) }
+    var dirCreating by remember { mutableStateOf(false) }
+    var dirCreateError by remember { mutableStateOf<String?>(null) }
+    var mkdirRefreshToken by remember { mutableStateOf(0L) }
+    val dirsResp by vm.st.hostDirs.collectAsState()
+
+    // On mkdir result: refresh the current listing on success, surface the error on failure
+    LaunchedEffect(Unit) {
+        vm.st.mkdirResult.collect { r ->
+            dirCreating = false
+            if (r.success) {
+                dirCreateError = null
+                mkdirRefreshToken++
+                vm.browseHostDirs(dirsResp?.basePath ?: "")
+            } else {
+                dirCreateError = r.errorMessage ?: "Could not create folder"
+            }
+        }
+    }
+
+    if (showFolderPicker) {
+        FolderPickerDialog(
+            dirs = dirsResp?.dirs,
+            currentDir = dirsResp?.basePath ?: "",
+            onNavigate = { path ->
+                dirCreateError = null
+                vm.browseHostDirs(path)
+            },
+            onSelect = { path ->
+                vm.spawnPeer(path)
+                showFolderPicker = false
+            },
+            onDismiss = { showFolderPicker = false },
+            onCreateFolder = { dirPath, name ->
+                dirCreating = true
+                dirCreateError = null
+                vm.createFolder(dirPath, name)
+            },
+            creating = dirCreating,
+            createError = dirCreateError,
+            dirRefresh = DirRefresh(mkdirRefreshToken)
+        )
+    }
+
     // One LazyColumn for the whole screen. The previous nested-list layout
     // (bounded active list + bounded saved list + weighted spacers) measured
     // the unweighted Saved box first, so a full saved list starved the active
@@ -447,8 +493,27 @@ fun SessionsScreen(
             item(key = "new-session") {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 6.dp),
-                    horizontalArrangement = Arrangement.End
+                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End)
                 ) {
+                    // Spawn in a chosen host directory (opens the folder picker).
+                    Box(
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .border(0.5.dp, borderMuted, RoundedCornerShape(0.dp))
+                            .clickable(enabled = sessions.isNotEmpty(), role = Role.Button, onClickLabel = "start new session in a chosen folder") {
+                                showFolderPicker = true
+                                dirCreating = false
+                                dirCreateError = null
+                                vm.browseHostDirs("")
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            "[+ in folder…]",
+                            color = if (sessions.isNotEmpty()) textPrimary else textMuted,
+                            fontFamily = piMono, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .minimumInteractiveComponentSize()

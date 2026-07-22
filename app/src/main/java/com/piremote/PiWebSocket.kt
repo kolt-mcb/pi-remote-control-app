@@ -298,13 +298,20 @@ class PiWebSocket : WebSocketListener() {
         // for the UI-facing flows, and this object is reused across reconnects.
     }
 
-    // Push a transient notify banner (max 5 kept). Used for host notify events
-    // and to surface dropped sends when the socket is closed/backpressured.
+    // Push a transient notify banner (max 5 kept, auto-expires). Used for host
+    // notify events and to surface dropped sends when the socket is closed/
+    // backpressured. Errors linger longer than info so they can be read.
+    private var bannerSeq = 0L
     private fun pushBanner(msg: String, type: String = "info") {
+        val banner = BannerMessage(msg, type, ++bannerSeq)
         val list = _notifyBanners.value.toMutableList()
-        list.add(BannerMessage(msg, type))
+        list.add(banner)
         while (list.size > 5) list.removeAt(0)
         _notifyBanners.value = list
+        scope.launch {
+            delay(if (type == "error") 12_000 else 6_000)
+            _notifyBanners.value = _notifyBanners.value.filterNot { it.id == banner.id }
+        }
     }
 
     fun sendPrompt(txt: String, targetAgentId: String = "") {
@@ -1587,7 +1594,8 @@ data class RemoteSession(
 /** Banner/toast from extension_ui notify() */
 data class BannerMessage(
     val content: String,
-    val type: String         // "info" | "warning" | "error"
+    val type: String,        // "info" | "warning" | "error"
+    val id: Long = 0         // identity for timed expiry (distinguishes equal texts)
 )
 
 /** One composed terminal frame from a mirrored pi TUI (host or peer). */
